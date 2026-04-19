@@ -141,6 +141,17 @@ func Run(cfg config.Configuration) {
 		defer softirqTrace.Detach()
 	}
 
+	memreclaimProgs := map[string]*ebpf.Program{
+		"mm_vmscan_direct_reclaim_begin": coll.Programs["direct_reclaim_begin"],
+		"mm_vmscan_direct_reclaim_end":   coll.Programs["direct_reclaim_end"],
+	}
+	memreclaimTrace, err := bpf.AttachTracingProgs(coll, memreclaimProgs, "vmscan")
+	if err != nil {
+		log.Errorf("Failed to attach mem reclaim tracing: %v", err)
+	} else {
+		defer memreclaimTrace.Detach()
+	}
+
 	// 启动任务管理器，从 ebpf map 中获取数据并进行处理
 	tm := NewTaskManager()
 

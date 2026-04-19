@@ -26,6 +26,7 @@ struct sched_latency_t
     __u32 preempted_pid_state; // 被抢占的进程状态
     __u64 irq_duration_ns;     // 调度延迟期间的中断耗时
     __u64 softirq_duration_ns; // 调度延迟期间的软中断耗时
+    __u64 mem_reclaim_ns;      // 调度延迟期间的内存直接回收耗时
 } __attribute__((packed));
 
 struct sched_latency_t *unused_sched_latency_t __attribute__((unused));
@@ -79,6 +80,24 @@ struct
     __type(key, u32);
     __type(value, u64);
 } softirq_cumulative_duration SEC(".maps");
+
+// 记录直接内存回收开始时间
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} mem_reclaim_start SEC(".maps");
+
+// 累积内存回收耗时
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} mem_reclaim_cumulative_duration SEC(".maps");
 
 struct trace_event_raw_sched_wakeup
 {
@@ -168,6 +187,37 @@ int softirq_exit(u64 *ctx)
         else
         {
             bpf_map_update_elem(&softirq_cumulative_duration, &key, &duration, BPF_ANY);
+        }
+        *start_ts = 0;
+    }
+    return 0;
+}
+
+SEC("tp_btf/mm_vmscan_direct_reclaim_begin")
+int direct_reclaim_begin(u64 *ctx)
+{
+    u32 key = 0;
+    u64 ts = bpf_ktime_get_ns();
+    bpf_map_update_elem(&mem_reclaim_start, &key, &ts, BPF_ANY);
+    return 0;
+}
+
+SEC("tp_btf/mm_vmscan_direct_reclaim_end")
+int direct_reclaim_end(u64 *ctx)
+{
+    u32 key = 0;
+    u64 *start_ts = bpf_map_lookup_elem(&mem_reclaim_start, &key);
+    if (start_ts && *start_ts > 0)
+    {
+        u64 duration = bpf_ktime_get_ns() - *start_ts;
+        u64 *cum_duration = bpf_map_lookup_elem(&mem_reclaim_cumulative_duration, &key);
+        if (cum_duration)
+        {
+            *cum_duration += duration;
+        }
+        else
+        {
+            bpf_map_update_elem(&mem_reclaim_cumulative_duration, &key, &duration, BPF_ANY);
         }
         *start_ts = 0;
     }
@@ -317,6 +367,13 @@ static __always_inline void handle_sched_switch(u32 prev_pid, u32 prev_tgid,
     {
         latency.softirq_duration_ns = *softirq_dur;
         *softirq_dur = 0; // 重置累积值
+    }
+
+    u64 *mem_reclaim_dur = bpf_map_lookup_elem(&mem_reclaim_cumulative_duration, &key);
+    if (mem_reclaim_dur)
+    {
+        latency.mem_reclaim_ns = *mem_reclaim_dur;
+        *mem_reclaim_dur = 0; // 重置累积值
     }
 
     bpf_probe_read_kernel_str(&latency.comm, sizeof(latency.comm), next_comm);

@@ -26,6 +26,8 @@ CREATE TABLE shepherd.sched_latency
 
     `softirq_duration_ns` UInt64,
 
+    `mem_reclaim_ns` UInt64,
+
     `datetime` DateTime64(9) DEFAULT now64(9)
 )
 ENGINE = MergeTree
