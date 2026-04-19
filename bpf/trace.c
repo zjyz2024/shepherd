@@ -331,7 +331,6 @@ static __always_inline void handle_sched_switch(u32 prev_pid, u32 prev_tgid,
     __u64 delay = now - *wakeup_ts;
 
     // 流控逻辑开始
-    __u32 key = 0;
     __u64 *last_ts = bpf_map_lookup_elem(&last_sample, &key);
     if (!last_ts)
         return;
