@@ -9,6 +9,7 @@ type SchedMetrics struct {
 	IrqDurationNs      uint64 // 调度延迟期间的中断耗时
 	SoftirqDurationNs  uint64 // 调度延迟期间的软中断耗时
 	MemReclaimNs       uint64 // 调度延迟期间的内存直接回收耗时
+	StackId            int32  // 内核调用栈ID
 }
 
 type SchedPreempted struct {

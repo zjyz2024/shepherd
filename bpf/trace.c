@@ -27,6 +27,7 @@ struct sched_latency_t
     __u64 irq_duration_ns;     // 调度延迟期间的中断耗时
     __u64 softirq_duration_ns; // 调度延迟期间的软中断耗时
     __u64 mem_reclaim_ns;      // 调度延迟期间的内存直接回收耗时
+    __s32 stack_id;            // 内核调用栈ID
 } __attribute__((packed));
 
 struct sched_latency_t *unused_sched_latency_t __attribute__((unused));
@@ -98,6 +99,15 @@ struct
     __type(key, u32);
     __type(value, u64);
 } mem_reclaim_cumulative_duration SEC(".maps");
+
+// 存储内核调用栈
+struct
+{
+    __uint(type, BPF_MAP_TYPE_STACK_TRACE);
+    __uint(max_entries, 10240);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, 127 * sizeof(__u64)); // 最大 127 层深度
+} stack_traces SEC(".maps");
 
 struct trace_event_raw_sched_wakeup
 {
@@ -375,6 +385,9 @@ static __always_inline void handle_sched_switch(u32 prev_pid, u32 prev_tgid,
         latency.mem_reclaim_ns = *mem_reclaim_dur;
         *mem_reclaim_dur = 0; // 重置累积值
     }
+
+    // 抓取当前内核调用栈
+    latency.stack_id = bpf_get_stackid(ctx, &stack_traces, BPF_F_FAST_STACK_CMP);
 
     bpf_probe_read_kernel_str(&latency.comm, sizeof(latency.comm), next_comm);
 

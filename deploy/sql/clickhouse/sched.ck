@@ -28,6 +28,8 @@ CREATE TABLE shepherd.sched_latency
 
     `mem_reclaim_ns` UInt64,
 
+    `stack_id` Int32,
+
     `datetime` DateTime64(9) DEFAULT now64(9)
 )
 ENGINE = MergeTree

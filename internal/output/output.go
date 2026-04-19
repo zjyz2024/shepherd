@@ -60,7 +60,8 @@ func (o *Output) InitSinkCli(cfg config.OutputConfig) (err error) {
 				preempted_pid, preempted_comm, 
 				is_preempt, comm,
 				preempted_pid_state,
-				irq_duration_ns, softirq_duration_ns, mem_reclaim_ns
+				irq_duration_ns, softirq_duration_ns, mem_reclaim_ns,
+				stack_id
 			)
 		`)
 		if err != nil {
