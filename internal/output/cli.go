@@ -27,9 +27,9 @@ func renderCLI() {
 	cmd.Run()
 
 	fmt.Println("Shepherd Diagnostic Top - " + time.Now().Format("15:04:05"))
-	fmt.Println("----------------------------------------------------------------------------------------------------------------------")
-	fmt.Printf("%-8s %-16s %-12s %-10s %-10s %-10s %-8s\n", "PID", "COMM", "LATENCY(ms)", "IRQ(us)", "SOFTIRQ(us)", "RECLAIM(us)", "STACK_ID")
-	fmt.Println("----------------------------------------------------------------------------------------------------------------------")
+	fmt.Println("-----------------------------------------------------------------------------------------------------------------------")
+	fmt.Printf("%-8s %-20s %-15s %-12s %-12s %-12s %-10s\n", "PID", "COMM", "LATENCY(ms)", "IRQ(us)", "SOFTIRQ(us)", "RECLAIM(us)", "STACK_ID")
+	fmt.Println("-----------------------------------------------------------------------------------------------------------------------")
 
 	var metrics []metadata.SchedMetrics
 	cache.SchedMetricsMap.Range(func(key, value interface{}) bool {
@@ -51,7 +51,7 @@ func renderCLI() {
 
 	for i := 0; i < displayCount; i++ {
 		m := metrics[i]
-		fmt.Printf("%-8d %-16s %-12.2f %-10.2f %-10.2f %-10.2f %-8d\n",
+		fmt.Printf("%-8d %-20s %-15.3f %-12.3f %-12.3f %-12.3f %-10d\n",
 			m.Pid,
 			m.Comm,
 			float64(m.DelayNs)/1e6,
@@ -62,7 +62,7 @@ func renderCLI() {
 		)
 	}
 
-	fmt.Println("----------------------------------------------------------------------------------------------------------------------")
+	fmt.Println("-----------------------------------------------------------------------------------------------------------------------")
 	fmt.Println("Preemption Stats:")
 	count := 0
 	cache.SchedPreemptedMap.Range(func(key, value interface{}) bool {
