@@ -59,7 +59,8 @@ func (o *Output) InitSinkCli(cfg config.OutputConfig) (err error) {
 				pid, tid, delay_ns, ts, 
 				preempted_pid, preempted_comm, 
 				is_preempt, comm,
-				preempted_pid_state
+				preempted_pid_state,
+				irq_duration_ns, softirq_duration_ns
 			)
 		`)
 		if err != nil {

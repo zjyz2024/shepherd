@@ -24,6 +24,8 @@ struct sched_latency_t
     __u64 is_preempt;          // 是否抢占(0: 否, 1: 是)
     char comm[16];             // 进程名
     __u32 preempted_pid_state; // 被抢占的进程状态
+    __u64 irq_duration_ns;     // 调度延迟期间的中断耗时
+    __u64 softirq_duration_ns; // 调度延迟期间的软中断耗时
 } __attribute__((packed));
 
 struct sched_latency_t *unused_sched_latency_t __attribute__((unused));
@@ -43,6 +45,40 @@ struct
     __type(key, __u32);
     __type(value, __u64);
 } wakeup_times SEC(".maps");
+
+// 记录中断开始时间
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} irq_start SEC(".maps");
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} softirq_start SEC(".maps");
+
+// 累积中断耗时
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} irq_cumulative_duration SEC(".maps");
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} softirq_cumulative_duration SEC(".maps");
 
 struct trace_event_raw_sched_wakeup
 {
@@ -74,6 +110,69 @@ struct trace_event_raw_sched_wakeup_new
     __s32 prio;
     __s32 target_cpu;
 } __attribute__((packed));
+
+// 中断处理逻辑
+SEC("tp_btf/irq_handler_entry")
+int irq_handler_entry(u64 *ctx)
+{
+    u32 key = 0;
+    u64 ts = bpf_ktime_get_ns();
+    bpf_map_update_elem(&irq_start, &key, &ts, BPF_ANY);
+    return 0;
+}
+
+SEC("tp_btf/irq_handler_exit")
+int irq_handler_exit(u64 *ctx)
+{
+    u32 key = 0;
+    u64 *start_ts = bpf_map_lookup_elem(&irq_start, &key);
+    if (start_ts && *start_ts > 0)
+    {
+        u64 duration = bpf_ktime_get_ns() - *start_ts;
+        u64 *cum_duration = bpf_map_lookup_elem(&irq_cumulative_duration, &key);
+        if (cum_duration)
+        {
+            *cum_duration += duration;
+        }
+        else
+        {
+            bpf_map_update_elem(&irq_cumulative_duration, &key, &duration, BPF_ANY);
+        }
+        *start_ts = 0;
+    }
+    return 0;
+}
+
+SEC("tp_btf/softirq_entry")
+int softirq_entry(u64 *ctx)
+{
+    u32 key = 0;
+    u64 ts = bpf_ktime_get_ns();
+    bpf_map_update_elem(&softirq_start, &key, &ts, BPF_ANY);
+    return 0;
+}
+
+SEC("tp_btf/softirq_exit")
+int softirq_exit(u64 *ctx)
+{
+    u32 key = 0;
+    u64 *start_ts = bpf_map_lookup_elem(&softirq_start, &key);
+    if (start_ts && *start_ts > 0)
+    {
+        u64 duration = bpf_ktime_get_ns() - *start_ts;
+        u64 *cum_duration = bpf_map_lookup_elem(&softirq_cumulative_duration, &key);
+        if (cum_duration)
+        {
+            *cum_duration += duration;
+        }
+        else
+        {
+            bpf_map_update_elem(&softirq_cumulative_duration, &key, &duration, BPF_ANY);
+        }
+        *start_ts = 0;
+    }
+    return 0;
+}
 
 // 公共函数：处理进程唤醒
 static __always_inline void handle_wakeup(u32 pid)
@@ -156,6 +255,7 @@ static __always_inline void handle_sched_switch(u32 prev_pid, u32 prev_tgid,
 {
     __u64 *wakeup_ts;
     __u64 now = bpf_ktime_get_ns();
+    u32 key = 0;
 
     if (prev_pid == 0 || next_pid == 0)
     {
@@ -204,6 +304,20 @@ static __always_inline void handle_sched_switch(u32 prev_pid, u32 prev_tgid,
         .ts = now,
         .preempted_pid_state = prev_state,
     };
+
+    u64 *irq_dur = bpf_map_lookup_elem(&irq_cumulative_duration, &key);
+    if (irq_dur)
+    {
+        latency.irq_duration_ns = *irq_dur;
+        *irq_dur = 0; // 重置累积值
+    }
+
+    u64 *softirq_dur = bpf_map_lookup_elem(&softirq_cumulative_duration, &key);
+    if (softirq_dur)
+    {
+        latency.softirq_duration_ns = *softirq_dur;
+        *softirq_dur = 0; // 重置累积值
+    }
 
     bpf_probe_read_kernel_str(&latency.comm, sizeof(latency.comm), next_comm);
 

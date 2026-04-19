@@ -40,3 +40,20 @@ func AttachTracepointProgs(coll *ebpf.Collection, target map[string]string, grou
 
 	return t, nil
 }
+
+func AttachTracingProgs(coll *ebpf.Collection, target map[string]*ebpf.Program, group string) (*tracing, error) {
+	btfTracepointProgs := map[string]*ebpf.Program{}
+	for name, prog := range target {
+		if prog == nil {
+			continue
+		}
+		btfTracepointProgs[name] = prog
+	}
+
+	t := &tracing{}
+	if err := t.Tracing(group, btfTracepointProgs); err != nil {
+		return nil, err
+	}
+
+	return t, nil
+}

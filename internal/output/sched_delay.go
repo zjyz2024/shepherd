@@ -51,10 +51,12 @@ func ProcessSchedDelay(coll *ebpf.Collection, ctx context.Context, cfg config.Co
 			}
 
 			schedMetrics := metadata.SchedMetrics{
-				Pid:     event.Pid,
-				DelayNs: event.DelayNs,
-				Ts:      event.Ts,
-				Comm:    sanitizeString(convertInt8ToString(event.Comm[:])),
+				Pid:                event.Pid,
+				DelayNs:            event.DelayNs,
+				Ts:                 event.Ts,
+				Comm:               sanitizeString(convertInt8ToString(event.Comm[:])),
+				IrqDurationNs:      event.IrqDurationNs,
+				SoftirqDurationNs:  event.SoftirqDurationNs,
 			}
 
 			current, isExist := cache.SchedMetricsMap.Load(event.Pid)
@@ -114,6 +116,8 @@ func insertSchedMetrics(ctx context.Context, conn clickhouse.Conn, batch driver.
 		event.IsPreempt,
 		sanitizeString(convertInt8ToString(event.Comm[:])),
 		event.PreemptedPidState,
+		event.IrqDurationNs,
+		event.SoftirqDurationNs,
 	)
 	if err != nil {
 		log.Errorf("failed to append to batch: %v", err)
@@ -134,7 +138,8 @@ func insertSchedMetrics(ctx context.Context, conn clickhouse.Conn, batch driver.
 				pid, tid, delay_ns, ts, 
 				preempted_pid, preempted_comm, 
 				is_preempt, comm,
-				preempted_pid_state
+				preempted_pid_state,
+				irq_duration_ns, softirq_duration_ns
 			)
 		`)
 		if err != nil {

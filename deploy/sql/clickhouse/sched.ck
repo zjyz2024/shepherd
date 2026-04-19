@@ -22,6 +22,10 @@ CREATE TABLE shepherd.sched_latency
 
     `preempted_pid_state` UInt32,
 
+    `irq_duration_ns` UInt64,
+
+    `softirq_duration_ns` UInt64,
+
     `datetime` DateTime64(9) DEFAULT now64(9)
 )
 ENGINE = MergeTree

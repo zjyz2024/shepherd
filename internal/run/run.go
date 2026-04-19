@@ -118,6 +118,29 @@ func Run(cfg config.Configuration) {
 	}
 	defer schedTrace.Detach()
 
+	// 附加中断跟踪点
+	irqProgs := map[string]*ebpf.Program{
+		"irq_handler_entry": coll.Programs["irq_handler_entry"],
+		"irq_handler_exit":  coll.Programs["irq_handler_exit"],
+	}
+	irqTrace, err := bpf.AttachTracingProgs(coll, irqProgs, "irq")
+	if err != nil {
+		log.Errorf("Failed to attach irq tracing: %v", err)
+	} else {
+		defer irqTrace.Detach()
+	}
+
+	softirqProgs := map[string]*ebpf.Program{
+		"softirq_entry": coll.Programs["softirq_entry"],
+		"softirq_exit":  coll.Programs["softirq_exit"],
+	}
+	softirqTrace, err := bpf.AttachTracingProgs(coll, softirqProgs, "softirq")
+	if err != nil {
+		log.Errorf("Failed to attach softirq tracing: %v", err)
+	} else {
+		defer softirqTrace.Detach()
+	}
+
 	// 启动任务管理器，从 ebpf map 中获取数据并进行处理
 	tm := NewTaskManager()
 
