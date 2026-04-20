@@ -1,6 +1,7 @@
 package output
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -22,7 +23,7 @@ const (
 
 var currentView = ViewScheduling
 
-func StartDiagnosticCLI() {
+func StartDiagnosticCLI(ctx context.Context, cancel context.CancelFunc) {
 	// 保存终端状态并在退出时恢复
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err == nil {
@@ -30,17 +31,25 @@ func StartDiagnosticCLI() {
 	}
 
 	// 启动按键监听协程
-	go listenKeyboard()
+	go listenKeyboard(cancel)
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		renderCLI()
+	for {
+		select {
+		case <-ctx.Done():
+			// 清屏并退出
+			fmt.Print("\033[H\033[2J")
+			fmt.Println("Exiting Shepherd...")
+			return
+		case <-ticker.C:
+			renderCLI()
+		}
 	}
 }
 
-func listenKeyboard() {
+func listenKeyboard(cancel context.CancelFunc) {
 	// 在 Raw 模式下读取字节
 	b := make([]byte, 1)
 	for {
@@ -53,11 +62,10 @@ func listenKeyboard() {
 		if char == 'n' || char == 'N' {
 			currentView = (currentView + 1) % ViewMax
 		}
-		// 按 'q' 或 Ctrl+C (in raw mode) 退出可以通过 signal 处理，这里也可以识别
+		// 按 'q' 或 'Q' 或 Ctrl+C (字节 3) 退出
 		if char == 'q' || char == 'Q' || char == 3 {
-			// 如果是 MakeRaw 模式，Ctrl+C 会变成字节 3
-			// 这里简单处理，具体退出逻辑由主进程 signal 协调更好
-			// os.Exit(0)
+			cancel()
+			return
 		}
 	}
 }
