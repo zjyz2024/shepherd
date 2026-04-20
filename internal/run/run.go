@@ -23,6 +23,7 @@ import (
 )
 
 func Run(cfg config.Configuration) {
+	// 加载配置文件
 	if cfg.ConfigPath != "" {
 		err := config.LoadConfig(&cfg)
 		if err != nil {
@@ -31,9 +32,11 @@ func Run(cfg config.Configuration) {
 		}
 	}
 
+	// ? no reference
 	stopChan := make(chan struct{})
 	defer close(stopChan)
 
+	// 启动pprof
 	if cfg.Pprof.Enable {
 		go func() {
 
@@ -63,6 +66,7 @@ func Run(cfg config.Configuration) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// 设置max fd
 	// 设置临时 rlimit
 	if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &unix.Rlimit{
 		Cur: 8192,

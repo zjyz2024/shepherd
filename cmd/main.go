@@ -12,10 +12,12 @@ import (
 )
 
 func main() {
+	// 日志
 	klog.InitFlags(nil)
 	log.InitLogger("./log/", 100, 5, 30)
 	defer klog.Flush()
 
+	// 主程序
 	var rootCmd = &cobra.Command{
 		Use:   "shepherd",
 		Short: "A Linux eBPF-based tool for detecting and analyzing noisy neighbor problems in process scheduling",

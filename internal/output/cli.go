@@ -88,37 +88,52 @@ func listenKeyboard(cancel context.CancelFunc) {
 }
 
 func getStackSymbols(stackID int32) string {
+	// 1. 基础校验：如果 ID 非法（<=0）或者没有加载 eBPF 集合，直接返回横杠
 	if stackID <= 0 || ebpfCollection == nil {
 		return "-"
 	}
 
+	// 2. 从加载好的 eBPF 集合中获取名为 "stack_traces" 的 Map
+	// 这个 Map 是由内核填充的，Key 是 StackID，Value 是内核指令指针（地址）数组
 	stackMap := ebpfCollection.Maps["stack_traces"]
 	if stackMap == nil {
 		return "no map"
 	}
 
+	// 3. 准备接收容器：内核堆栈深度通常最大为 127 层，存储的是 64 位内存地址
 	var addresses [127]uint64
+
+	// 4. 从内核 Map 中查询数据：根据 stackID 找到对应的地址数组
 	if err := stackMap.Lookup(uint32(stackID), &addresses); err != nil {
+		// 如果查不到（可能已被内核自动清理），则退而求其次只返回 ID 本身
 		return fmt.Sprintf("ID:%d", stackID)
 	}
 
+	// 5. 符号化逻辑：将内存地址“翻译”为函数名
 	var syms []string
 	for _, addr := range addresses {
+		// 地址 0 表示堆栈结束
 		if addr == 0 {
 			break
 		}
+		// ResolveSymbol 是关键函数：它去查之前加载好的内核符号表（/proc/kallsyms）
+		// 将地址（如 0xffffffff81234abc）转换为函数名（如 "vfs_read"）
 		syms = append(syms, ResolveSymbol(addr))
 	}
 
+	// 6. 如果查到了地址但翻译不出任何函数名，返回 ID
 	if len(syms) == 0 {
 		return fmt.Sprintf("ID:%d", stackID)
 	}
 
-	// 只返回最顶层的 3 个符号以防显示太长
+	// 7. 界面优化：为了防止屏幕被长达 100 多层的调用栈刷屏，只取最顶层的 3 层函数
+	// 最顶层通常是导致延迟最直接的代码逻辑位置
 	displayLen := 3
 	if len(syms) < displayLen {
 		displayLen = len(syms)
 	}
+
+	// 8. 格式化输出：用 "->" 箭头连接函数名，例如 "vfs_write->do_iter_write->ext4_file_write"
 	return strings.Join(syms[:displayLen], "->")
 }
 
@@ -131,7 +146,9 @@ func formatStack(stackID int32) string {
 }
 
 func renderCLI() {
-	// 清屏
+	// --- 第一部分：清屏与头部信息渲染 ---
+	// 使用 ANSI 转义字符：\033[H (光标复位到左上角), \033[2J (清空屏幕)
+	// 这样可以实现原地刷新的效果，而不是不断向下滚动
 	fmt.Print("\033[H\033[2J")
 
 	header := "Shepherd Diagnostic Top"
@@ -151,6 +168,8 @@ func renderCLI() {
 
 	fmt.Printf("%s - %s (n:switch, s:sym[%s], q:exit)\r\n", header, time.Now().Format("15:04:05"), symStatus)
 
+	// --- 第二部分：数据快照提取 ---
+	// 将并发安全的 sync.Map 中的数据拷贝到切片 metrics 中，方便后续排序
 	var metrics []metadata.SchedMetrics
 	cache.SchedMetricsMap.Range(func(key, value interface{}) bool {
 		m := value.(metadata.SchedMetrics)
@@ -158,6 +177,8 @@ func renderCLI() {
 		return true
 	})
 
+	// --- 第三部分：动态排序逻辑 ---
+	// 这是看板的灵魂：根据当前不同的视图，按不同的权重进行倒序排列（大的在前）
 	sort.Slice(metrics, func(i, j int) bool {
 		switch currentView {
 		case ViewScheduling:
@@ -171,11 +192,14 @@ func renderCLI() {
 		}
 	})
 
+	// 限制显示数量，只展示前 20 名（Top 20）
 	displayCount := 20
 	if len(metrics) < displayCount {
 		displayCount = len(metrics)
 	}
 
+	// --- 第四部分：表格内容渲染 ---
+	// 根据视图类型，打印不同的表头和格式化行
 	switch currentView {
 	case ViewScheduling:
 		fmt.Printf("%-8s %-20s %-15s %-10s %-25s\r\n", "PID", "COMM", "LATENCY(ms)", "PREEMPT", "STACK_TRACE")
@@ -200,6 +224,8 @@ func renderCLI() {
 		}
 	}
 
+	// --- 第五部分：底部辅助信息渲染 ---
+	// 如果在调度视图下，额外展示“谁在抢占别人”的排行榜
 	if currentView == ViewScheduling {
 		fmt.Print("\r\nTop Preemptors:\r\n")
 		count := 0
