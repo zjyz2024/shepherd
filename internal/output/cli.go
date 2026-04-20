@@ -3,7 +3,6 @@ package output
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
 	"time"
 
