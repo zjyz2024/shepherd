@@ -9,6 +9,7 @@ import (
 
 	"github.com/cen-ngc5139/shepherd/internal/cache"
 	"github.com/cen-ngc5139/shepherd/internal/metadata"
+	"github.com/cilium/ebpf"
 	"golang.org/x/term"
 )
 
@@ -21,9 +22,20 @@ const (
 	ViewMax
 )
 
-var currentView = ViewScheduling
+var (
+	currentView       = ViewScheduling
+	EnableStackSymbol = true // 符号还原功能开关
+	ebpfCollection    *ebpf.Collection
+)
 
-func StartDiagnosticCLI(ctx context.Context, cancel context.CancelFunc) {
+func StartDiagnosticCLI(ctx context.Context, cancel context.CancelFunc, coll *ebpf.Collection) {
+	ebpfCollection = coll
+
+	// 初始化内核符号表
+	if EnableStackSymbol {
+		_ = LoadKallsyms()
+	}
+
 	// 保存终端状态并在退出时恢复
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err == nil {
@@ -62,6 +74,10 @@ func listenKeyboard(cancel context.CancelFunc) {
 		if char == 'n' || char == 'N' {
 			currentView = (currentView + 1) % ViewMax
 		}
+		// 按 's' 或 'S' 切换符号开关
+		if char == 's' || char == 'S' {
+			EnableStackSymbol = !EnableStackSymbol
+		}
 		// 按 'q' 或 'Q' 或 Ctrl+C (字节 3) 退出
 		if char == 'q' || char == 'Q' || char == 3 {
 			cancel()
@@ -70,8 +86,51 @@ func listenKeyboard(cancel context.CancelFunc) {
 	}
 }
 
+func getStackSymbols(stackID int32) string {
+	if stackID <= 0 || ebpfCollection == nil {
+		return "-"
+	}
+
+	stackMap := ebpfCollection.Maps["stack_traces"]
+	if stackMap == nil {
+		return "no map"
+	}
+
+	var addresses [127]uint64
+	if err := stackMap.Lookup(uint32(stackID), &addresses); err != nil {
+		return fmt.Sprintf("ID:%d", stackID)
+	}
+
+	var syms []string
+	for _, addr := range addresses {
+		if addr == 0 {
+			break
+		}
+		syms = append(syms, ResolveSymbol(addr))
+	}
+
+	if len(syms) == 0 {
+		return fmt.Sprintf("ID:%d", stackID)
+	}
+
+	// 只返回最顶层的 3 个符号以防显示太长
+	displayLen := 3
+	if len(syms) < displayLen {
+		displayLen = len(syms)
+	}
+	return strings.Join(syms[:displayLen], "->")
+}
+
+// 补丁：由于 import 循环或位置，这里直接处理 symbols 的 string 拼接
+func formatStack(stackID int32) string {
+	if !EnableStackSymbol {
+		return fmt.Sprintf("%d", stackID)
+	}
+	return getStackSymbols(stackID)
+}
+
 func renderCLI() {
-	// 清屏 (使用 ANSI 转义序列在 Raw 模式下更稳定)
+	// 清屏
 	fmt.Print("\033[H\033[2J")
 
 	header := "Shepherd Diagnostic Top"
@@ -84,8 +143,12 @@ func renderCLI() {
 		header += " [VIEW: INTERRUPT]"
 	}
 
-	// 使用 \r\n 确保在 Raw 模式下换行正确
-	fmt.Printf("%s - %s (Press 'n' to switch, 'q' to exit)\r\n", header, time.Now().Format("15:04:05"))
+	symStatus := "OFF"
+	if EnableStackSymbol {
+		symStatus = "ON"
+	}
+
+	fmt.Printf("%s - %s (n:switch, s:sym[%s], q:exit)\r\n", header, time.Now().Format("15:04:05"), symStatus)
 
 	var metrics []metadata.SchedMetrics
 	cache.SchedMetricsMap.Range(func(key, value interface{}) bool {
@@ -94,7 +157,6 @@ func renderCLI() {
 		return true
 	})
 
-	// 按视图核心指标排序
 	sort.Slice(metrics, func(i, j int) bool {
 		switch currentView {
 		case ViewScheduling:
@@ -115,18 +177,18 @@ func renderCLI() {
 
 	switch currentView {
 	case ViewScheduling:
-		fmt.Printf("%-8s %-20s %-15s %-15s %-10s\r\n", "PID", "COMM", "LATENCY(ms)", "PREEMPT_CNT", "STACK_ID")
+		fmt.Printf("%-8s %-20s %-15s %-10s %-25s\r\n", "PID", "COMM", "LATENCY(ms)", "PREEMPT", "STACK_TRACE")
 		for i := 0; i < displayCount; i++ {
 			m := metrics[i]
-			fmt.Printf("%-8d %-20s %-15.3f %-15d %-10d\r\n",
-				m.Pid, m.Comm, float64(m.DelayNs)/1e6, m.PreempteCount, m.StackId)
+			fmt.Printf("%-8d %-20s %-15.3f %-10d %-25s\r\n",
+				m.Pid, m.Comm, float64(m.DelayNs)/1e6, m.PreempteCount, formatStack(m.StackId))
 		}
 	case ViewMemory:
-		fmt.Printf("%-8s %-20s %-15s %-15s %-10s\r\n", "PID", "COMM", "RECLAIM(ms)", "LATENCY(ms)", "STACK_ID")
+		fmt.Printf("%-8s %-20s %-15s %-15s %-25s\r\n", "PID", "COMM", "RECLAIM(ms)", "LATENCY(ms)", "STACK_TRACE")
 		for i := 0; i < displayCount; i++ {
 			m := metrics[i]
-			fmt.Printf("%-8d %-20s %-15.3f %-15.3f %-10d\r\n",
-				m.Pid, m.Comm, float64(m.MemReclaimNs)/1e6, float64(m.DelayNs)/1e6, m.StackId)
+			fmt.Printf("%-8d %-20s %-15.3f %-15.3f %-25s\r\n",
+				m.Pid, m.Comm, float64(m.MemReclaimNs)/1e6, float64(m.DelayNs)/1e6, formatStack(m.StackId))
 		}
 	case ViewInterrupt:
 		fmt.Printf("%-8s %-20s %-15s %-15s %-15s\r\n", "PID", "COMM", "IRQ(ms)", "SOFTIRQ(ms)", "LATENCY(ms)")

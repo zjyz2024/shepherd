@@ -158,7 +158,7 @@ func Run(cfg config.Configuration) {
 
 	tm.Add("服务器", func() error { return server.NewServer().Start() })
 	tm.Add("处理调度延迟", func() error { output.ProcessSchedDelay(coll, cliCtx, cfg); return nil })
-	tm.Add("诊断命令行", func() error { output.StartDiagnosticCLI(cliCtx, cliCancel); return nil })
+	tm.Add("诊断命令行", func() error { output.StartDiagnosticCLI(cliCtx, cliCancel, coll); return nil })
 	// 运行所有任务
 	if err := tm.Run(cliCtx); err != nil {
 		log.Errorf("错误: %v\n", err)
