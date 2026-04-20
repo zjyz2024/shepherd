@@ -160,7 +160,10 @@ func Run(cfg config.Configuration) {
 	tm.Add("处理调度延迟", func() error { output.ProcessSchedDelay(coll, cliCtx, cfg); return nil })
 	tm.Add("诊断命令行", func() error { output.StartDiagnosticCLI(cliCtx, cliCancel); return nil })
 	// 运行所有任务
-	if err := tm.Run(); err != nil {
+	if err := tm.Run(cliCtx); err != nil {
 		log.Errorf("错误: %v\n", err)
 	}
+
+	// 强制退出进程，确保终端恢复后能立刻回到 Shell
+	os.Exit(0)
 }

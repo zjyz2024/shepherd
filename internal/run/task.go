@@ -65,7 +65,7 @@ func (tm *TaskManager) List() []Task {
 }
 
 // Run 并发运行所有任务
-func (tm *TaskManager) Run() error {
+func (tm *TaskManager) Run(ctx context.Context) error {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 
@@ -81,11 +81,21 @@ func (tm *TaskManager) Run() error {
 		}(task)
 	}
 
-	// 等待所有任务完成
+	// 等待任务完成或 Context 取消
+	done := make(chan struct{})
 	go func() {
 		tm.wg.Wait()
-		close(errChan)
+		close(done)
 	}()
+
+	select {
+	case <-ctx.Done():
+		// 如果 Context 取消，我们不再等待，直接返回
+		return nil
+	case <-done:
+		// 如果任务自然完成
+		close(errChan)
+	}
 
 	// 收集错误
 	var errors []error
