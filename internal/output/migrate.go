@@ -36,7 +36,7 @@ func ProcessMigrate(coll *ebpf.Collection, ctx context.Context) {
 		Tgid    uint32
 		OrigCpu int32
 		DestCpu int32
-		Comm    [16]byte
+		Comm    [16]int8
 		Pad     uint64
 	}
 
