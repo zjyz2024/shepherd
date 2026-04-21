@@ -32,6 +32,8 @@ type SchedMetrics struct {
 	SchedLatencies    *prometheus.GaugeVec // 调度延迟
 	SchedPreempted    *prometheus.GaugeVec // 被抢占的进程
 	SchedPreempte     *prometheus.GaugeVec // 抢占的进程
+	VoluntaryCtxtSwitches   *prometheus.GaugeVec // 自愿上下文切换
+	InvoluntaryCtxtSwitches *prometheus.GaugeVec // 非自愿上下文切换
 	SchedMetricsMap   *sync.Map
 	SchedPreemptedMap *sync.Map
 }
@@ -51,6 +53,8 @@ func NewSchedMetrics(schedMetricsMap, schedPreemptedMap *sync.Map) *SchedMetrics
 		SchedLatencies:    createGaugeVec(SchedLatencies, "task cpu scheduling latency", []string{"pid", "comm"}),
 		SchedPreempted:    createGaugeVec(SchedPreempted, "task cpu preempted", []string{"pid", "comm"}),
 		SchedPreempte:     createGaugeVec(SchedPreempte, "task cpu preempted", []string{"pid", "comm"}),
+		VoluntaryCtxtSwitches:   createGaugeVec("voluntary_context_switches", "voluntary context switches per task", []string{"pid", "comm"}),
+		InvoluntaryCtxtSwitches: createGaugeVec("involuntary_context_switches", "involuntary context switches per task", []string{"pid", "comm"}),
 		SchedMetricsMap:   schedMetricsMap,
 		SchedPreemptedMap: schedPreemptedMap,
 	}
@@ -62,6 +66,12 @@ func (m *SchedMetrics) UpdateMetricsFromCache(nodeName string) {
 		m.SchedLatencies.WithLabelValues(fmt.Sprintf("%d", schedMetrics.Pid), schedMetrics.Comm).Set(float64(schedMetrics.DelayNs))
 		if schedMetrics.PreempteCount > 0 {
 			m.SchedPreempte.WithLabelValues(fmt.Sprintf("%d", schedMetrics.Pid), schedMetrics.Comm).Set(float64(schedMetrics.PreempteCount))
+		}
+		if schedMetrics.VoluntaryCtxtSwitches > 0 {
+			m.VoluntaryCtxtSwitches.WithLabelValues(fmt.Sprintf("%d", schedMetrics.Pid), schedMetrics.Comm).Set(float64(schedMetrics.VoluntaryCtxtSwitches))
+		}
+		if schedMetrics.InvoluntaryCtxtSwitches > 0 {
+			m.InvoluntaryCtxtSwitches.WithLabelValues(fmt.Sprintf("%d", schedMetrics.Pid), schedMetrics.Comm).Set(float64(schedMetrics.InvoluntaryCtxtSwitches))
 		}
 		return true
 	})
