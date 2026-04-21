@@ -31,6 +31,10 @@ struct sched_latency_t
     // Phase 1: 上下文切换统计
     __u8 is_voluntary;         // 1: 自愿切换, 0: 非自愿（被抢占）
     __u8 prev_state_raw;       // 原始的 prev_state 值（用于诊断）
+    // Phase 5: 优先级反转检测
+    __u8 is_priority_inversion; // 1: 高优先级被低优先级抢占, 0: 否
+    __u8 prev_prio;            // 被抢占进程的优先级
+    __u8 next_prio;            // 抢占进程的优先级
 } __attribute__((packed));
 
 struct sched_latency_t *unused_sched_latency_t __attribute__((unused));
@@ -92,6 +96,20 @@ struct
     __type(key, __u32);
     __type(value, __u64);
 } wakeup_times SEC(".maps");
+
+// Phase 5: 存储前一个进程的优先级用于反转检测
+struct priority_info {
+    __u16 prio;     // 优先级
+    __u64 ts;       // 时间戳
+};
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 10240);
+    __type(key, __u32);
+    __type(value, struct priority_info);
+} priority_map SEC(".maps");
 
 // 记录中断开始时间
 struct
@@ -356,7 +374,8 @@ u64 get_task_cgroup_id(struct task_struct *task)
 // 公共函数：处理调度切换事件
 static __always_inline void handle_sched_switch(u32 prev_pid, u32 prev_tgid,
                                                 u32 next_pid, u32 next_tgid, __u32 prev_state,
-                                                const char *prev_comm, const char *next_comm, void *ctx)
+                                                const char *prev_comm, const char *next_comm, 
+                                                __u16 prev_prio, __u16 next_prio, void *ctx)
 {
     __u64 *wakeup_ts;
     __u64 now = bpf_ktime_get_ns();
@@ -465,11 +484,28 @@ static __always_inline void handle_sched_switch(u32 prev_pid, u32 prev_tgid,
         latency.is_voluntary = 0;  // 非自愿切换
         latency.preempted_pid = prev_tgid ? prev_tgid : prev_pid;
         bpf_probe_read_kernel_str(&latency.preempted_comm, sizeof(latency.preempted_comm), prev_comm);
+        
+        // Phase 5: 检测优先级反转
+        // 在 Linux 内核中，prio 越小表示优先级越高
+        // 如果被抢占的进程优先级高于抢占者（prio 更小），则发生优先级反转
+        latency.prev_prio = (__u8)(prev_prio & 0xFF);
+        latency.next_prio = (__u8)(next_prio & 0xFF);
+        
+        if (prev_prio < next_prio) {
+            latency.is_priority_inversion = 1;
+        }
     }
     else
     {
         latency.is_voluntary = 1;  // 自愿切换
     }
+    
+    // Phase 5: 存储当前进程的优先级用于下一次比较
+    struct priority_info pinfo = {
+        .prio = next_prio,
+        .ts = now,
+    };
+    bpf_map_update_elem(&priority_map, &next_pid, &pinfo, BPF_ANY);
 
     latency.prev_state_raw = (__u8)prev_state;
 
@@ -494,6 +530,10 @@ int sched_switch(u64 *ctx)
     u32 prev_tgid = BPF_CORE_READ(prev, tgid);
     u32 next_pid = BPF_CORE_READ(next, pid);
     u32 next_tgid = BPF_CORE_READ(next, tgid);
+    
+    // Phase 5: 读取优先级用于优先级反转检测
+    u16 prev_prio = BPF_CORE_READ(prev, prio);
+    u16 next_prio = BPF_CORE_READ(next, prio);
 
 #if defined(__TARGET_ARCH_x86)
     __u32 state = BPF_CORE_READ(prev, __state);
@@ -504,7 +544,7 @@ int sched_switch(u64 *ctx)
 #endif
 
     handle_sched_switch(prev_pid, prev_tgid, next_pid, next_tgid,
-                        state, prev->comm, next->comm, ctx);
+                        state, prev->comm, next->comm, prev_prio, next_prio, ctx);
     return 0;
 }
 #else
@@ -512,7 +552,7 @@ SEC("tp/sched/sched_switch")
 int sched_switch(struct trace_event_raw_sched_switch *ctx)
 {
     handle_sched_switch(ctx->prev_pid, 0, ctx->next_pid, 0,
-                        ctx->prev_state, ctx->prev_comm, ctx->next_comm, ctx);
+                        ctx->prev_state, ctx->prev_comm, ctx->next_comm, 0, 0, ctx);
     return 0;
 }
 #endif

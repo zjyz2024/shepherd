@@ -22,6 +22,10 @@ type SchedMetrics struct {
 	// Phase 4: CPU 迁移
 	MigrationCount             uint64 // CPU 迁移次数
 	AvgMigrationDist           float64 // 平均迁移距离
+	
+	// Phase 5: 优先级反转检测
+	PriorityInversionCount     uint64 // 优先级反转发生次数
+	MaxInversionBlockTimeNs    uint64 // 最大反转阻塞时间（纳秒）
 }
 
 type SchedPreempted struct {

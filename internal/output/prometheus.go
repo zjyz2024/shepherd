@@ -36,6 +36,8 @@ type SchedMetrics struct {
 	InvoluntaryCtxtSwitches *prometheus.GaugeVec // 非自愿上下文切换
 	MigrationCount    *prometheus.GaugeVec // CPU 迁移次数
 	AvgMigrationDist  *prometheus.GaugeVec // 平均迁移距离
+	PriorityInversion *prometheus.GaugeVec // 优先级反转次数
+	MaxInversionBlockTime *prometheus.GaugeVec // 最大反转阻塞时间
 	SchedMetricsMap   *sync.Map
 	SchedPreemptedMap *sync.Map
 }
@@ -59,6 +61,8 @@ func NewSchedMetrics(schedMetricsMap, schedPreemptedMap *sync.Map) *SchedMetrics
 		InvoluntaryCtxtSwitches: createGaugeVec("involuntary_context_switches", "involuntary context switches per task", []string{"pid", "comm"}),
 		MigrationCount:    createGaugeVec("migration_count", "CPU migration count per task", []string{"pid", "comm"}),
 		AvgMigrationDist:  createGaugeVec("avg_migration_distance", "average CPU migration distance per task", []string{"pid", "comm"}),
+		PriorityInversion: createGaugeVec("priority_inversion_count", "priority inversion count per task", []string{"pid", "comm"}),
+		MaxInversionBlockTime: createGaugeVec("max_inversion_block_time_ns", "max priority inversion blocking time per task (ns)", []string{"pid", "comm"}),
 		SchedMetricsMap:   schedMetricsMap,
 		SchedPreemptedMap: schedPreemptedMap,
 	}
@@ -80,6 +84,10 @@ func (m *SchedMetrics) UpdateMetricsFromCache(nodeName string) {
 		if schedMetrics.MigrationCount > 0 {
 			m.MigrationCount.WithLabelValues(fmt.Sprintf("%d", schedMetrics.Pid), schedMetrics.Comm).Set(float64(schedMetrics.MigrationCount))
 			m.AvgMigrationDist.WithLabelValues(fmt.Sprintf("%d", schedMetrics.Pid), schedMetrics.Comm).Set(schedMetrics.AvgMigrationDist)
+		}
+		if schedMetrics.PriorityInversionCount > 0 {
+			m.PriorityInversion.WithLabelValues(fmt.Sprintf("%d", schedMetrics.Pid), schedMetrics.Comm).Set(float64(schedMetrics.PriorityInversionCount))
+			m.MaxInversionBlockTime.WithLabelValues(fmt.Sprintf("%d", schedMetrics.Pid), schedMetrics.Comm).Set(float64(schedMetrics.MaxInversionBlockTimeNs))
 		}
 		return true
 	})

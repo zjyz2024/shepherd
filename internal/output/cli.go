@@ -31,6 +31,7 @@ const (
 	ColSetCtxtSwitch
 	ColSetMigration
 	ColSetOffCPU
+	ColSetPriorityInversion
 	ColSetFull
 	ColSetMax
 )
@@ -70,6 +71,12 @@ var columnDefinitions = map[ColumnSet][]Column{
 		{name: "offcpu_time", label: "OFF_CPU(ms)", width: 15, alignLeft: false},
 		{name: "offcpu_count", label: "COUNT", width: 10, alignLeft: false},
 	},
+	ColSetPriorityInversion: {
+		{name: "pid", label: "PID", width: 8, alignLeft: false},
+		{name: "comm", label: "COMM", width: 20, alignLeft: true},
+		{name: "pi_count", label: "PI_COUNT", width: 12, alignLeft: false},
+		{name: "max_block_time", label: "MAX_BLOCK_TIME(ms)", width: 18, alignLeft: false},
+	},
 	ColSetFull: {
 		{name: "pid", label: "PID", width: 8, alignLeft: false},
 		{name: "comm", label: "COMM", width: 20, alignLeft: true},
@@ -80,6 +87,8 @@ var columnDefinitions = map[ColumnSet][]Column{
 		{name: "migrations", label: "MIGRATIONS", width: 12, alignLeft: false},
 		{name: "avg_dist", label: "AVG_DIST", width: 10, alignLeft: false},
 		{name: "offcpu_time", label: "OFF_CPU(ms)", width: 15, alignLeft: false},
+		{name: "pi_count", label: "PI_COUNT", width: 12, alignLeft: false},
+		{name: "max_block_time", label: "MAX_BLOCK(ms)", width: 15, alignLeft: false},
 	},
 }
 
@@ -169,6 +178,8 @@ func listenKeyboard(cancel context.CancelFunc) {
 				currentLayout.sortField = "invol_ctx"
 			case "invol_ctx":
 				currentLayout.sortField = "migrations"
+			case "migrations":
+				currentLayout.sortField = "pi_count"
 			default:
 				currentLayout.sortField = "latency"
 			}
@@ -201,12 +212,13 @@ func listenKeyboard(cancel context.CancelFunc) {
 
 func showColumnMenu() {
 	fmt.Print("\033[H\033[2J")
-	fmt.Println("Select Column Group (press number 1-5 or q to cancel):")
+	fmt.Println("Select Column Group (press number 1-6 or q to cancel):")
 	fmt.Println("[1] BASIC (PID, COMM, LATENCY, PREEMPT, STACK)")
 	fmt.Println("[2] CTXT_SWITCH (VOL_CTX, INVOL_CTX, CTX_TOTAL)")
 	fmt.Println("[3] MIGRATION (MIGRATIONS, AVG_DIST)")
 	fmt.Println("[4] OFF_CPU (OFF_CPU_TIME, COUNT)")
-	fmt.Println("[5] FULL (All columns)")
+	fmt.Println("[5] PRIORITY_INVERSION (PI_COUNT, MAX_BLOCK_TIME)")
+	fmt.Println("[6] FULL (All columns)")
 
 	b := make([]byte, 1)
 	_, _ = os.Stdin.Read(b)
@@ -222,6 +234,8 @@ func showColumnMenu() {
 	case '4':
 		currentLayout.columnSet = ColSetOffCPU
 	case '5':
+		currentLayout.columnSet = ColSetPriorityInversion
+	case '6':
 		currentLayout.columnSet = ColSetFull
 	}
 	currentLayout.scrollOffset = 0
@@ -398,6 +412,8 @@ func sortMetrics(metrics []metadata.SchedMetrics, field string, descending bool)
 			cmpI, cmpJ = metrics[i].InvoluntaryCtxtSwitches, metrics[j].InvoluntaryCtxtSwitches
 		case "migrations":
 			cmpI, cmpJ = metrics[i].MigrationCount, metrics[j].MigrationCount
+		case "pi_count":
+			cmpI, cmpJ = metrics[i].PriorityInversionCount, metrics[j].PriorityInversionCount
 		default:
 			cmpI, cmpJ = metrics[i].DelayNs, metrics[j].DelayNs
 		}
@@ -449,6 +465,10 @@ func renderTableRow(m *metadata.SchedMetrics, columns []Column) {
 			cellValue = fmt.Sprintf("%.3f", float64(m.OffCPUTimeNs)/1e6)
 		case "offcpu_count":
 			cellValue = fmt.Sprintf("%d", m.OffCPUEventCount)
+		case "pi_count":
+			cellValue = fmt.Sprintf("%d", m.PriorityInversionCount)
+		case "max_block_time":
+			cellValue = fmt.Sprintf("%.3f", float64(m.MaxInversionBlockTimeNs)/1e6)
 		case "stack":
 			cellValue = formatStack(m.StackId)
 		default:

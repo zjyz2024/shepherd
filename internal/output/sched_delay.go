@@ -81,6 +81,12 @@ func ProcessSchedDelay(coll *ebpf.Collection, ctx context.Context, cfg config.Co
 			} else {
 				schedMetrics.InvoluntaryCtxtSwitches = 1
 			}
+			
+			// Phase 5: 初始化优先级反转计数
+			if event.IsPriorityInversion == 1 {
+				schedMetrics.PriorityInversionCount = 1
+				schedMetrics.MaxInversionBlockTimeNs = event.DelayNs
+			}
 
 			// 1. 尝试从缓存中查找该进程已有的统计数据
 			current, isExist := cache.SchedMetricsMap.Load(event.Pid)
@@ -103,6 +109,14 @@ func ProcessSchedDelay(coll *ebpf.Collection, ctx context.Context, cfg config.Co
 				currentSchedMetrics.VoluntaryCtxtSwitches++
 			} else {
 				currentSchedMetrics.InvoluntaryCtxtSwitches++
+			}
+			
+			// Phase 5: 累加优先级反转计数并更新最大阻塞时间
+			if event.IsPriorityInversion == 1 {
+				currentSchedMetrics.PriorityInversionCount++
+				if event.DelayNs > currentSchedMetrics.MaxInversionBlockTimeNs {
+					currentSchedMetrics.MaxInversionBlockTimeNs = event.DelayNs
+				}
 			}
 
 			// 1. 判断是否发生了“强行抢占”
