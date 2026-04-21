@@ -34,6 +34,8 @@ type SchedMetrics struct {
 	SchedPreempte     *prometheus.GaugeVec // 抢占的进程
 	VoluntaryCtxtSwitches   *prometheus.GaugeVec // 自愿上下文切换
 	InvoluntaryCtxtSwitches *prometheus.GaugeVec // 非自愿上下文切换
+	MigrationCount    *prometheus.GaugeVec // CPU 迁移次数
+	AvgMigrationDist  *prometheus.GaugeVec // 平均迁移距离
 	SchedMetricsMap   *sync.Map
 	SchedPreemptedMap *sync.Map
 }
@@ -55,6 +57,8 @@ func NewSchedMetrics(schedMetricsMap, schedPreemptedMap *sync.Map) *SchedMetrics
 		SchedPreempte:     createGaugeVec(SchedPreempte, "task cpu preempted", []string{"pid", "comm"}),
 		VoluntaryCtxtSwitches:   createGaugeVec("voluntary_context_switches", "voluntary context switches per task", []string{"pid", "comm"}),
 		InvoluntaryCtxtSwitches: createGaugeVec("involuntary_context_switches", "involuntary context switches per task", []string{"pid", "comm"}),
+		MigrationCount:    createGaugeVec("migration_count", "CPU migration count per task", []string{"pid", "comm"}),
+		AvgMigrationDist:  createGaugeVec("avg_migration_distance", "average CPU migration distance per task", []string{"pid", "comm"}),
 		SchedMetricsMap:   schedMetricsMap,
 		SchedPreemptedMap: schedPreemptedMap,
 	}
@@ -72,6 +76,10 @@ func (m *SchedMetrics) UpdateMetricsFromCache(nodeName string) {
 		}
 		if schedMetrics.InvoluntaryCtxtSwitches > 0 {
 			m.InvoluntaryCtxtSwitches.WithLabelValues(fmt.Sprintf("%d", schedMetrics.Pid), schedMetrics.Comm).Set(float64(schedMetrics.InvoluntaryCtxtSwitches))
+		}
+		if schedMetrics.MigrationCount > 0 {
+			m.MigrationCount.WithLabelValues(fmt.Sprintf("%d", schedMetrics.Pid), schedMetrics.Comm).Set(float64(schedMetrics.MigrationCount))
+			m.AvgMigrationDist.WithLabelValues(fmt.Sprintf("%d", schedMetrics.Pid), schedMetrics.Comm).Set(schedMetrics.AvgMigrationDist)
 		}
 		return true
 	})
