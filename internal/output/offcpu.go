@@ -1,11 +1,12 @@
 package output
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"os"
 	"sync"
 
-	"github.com/cen-ngc5139/shepherd/internal/binary"
 	"github.com/cen-ngc5139/shepherd/internal/cache"
 	"github.com/cen-ngc5139/shepherd/internal/log"
 	"github.com/cen-ngc5139/shepherd/internal/metadata"
@@ -33,7 +34,7 @@ func ProcessOffCPU(coll *ebpf.Collection, ctx context.Context) {
 	// 获取 Off-CPU 事件流
 	offCPUEvents := coll.Maps["off_cpu_events"]
 	if offCPUEvents == nil {
-		log.Warnf("off_cpu_events map not found in BPF collection")
+		log.Warningf("off_cpu_events map not found in BPF collection")
 		return
 	}
 
@@ -45,7 +46,20 @@ func ProcessOffCPU(coll *ebpf.Collection, ctx context.Context) {
 
 	defer perfReader.Close()
 
-	var event binary.ShepherdOffCpuEventT
+	// 本地定义与 C 结构对应的解析结构（小端）
+	type offCpuEventRaw struct {
+		TsLeave       uint64
+		Pid           uint32
+		Tid           uint32
+		Comm          [16]byte
+		CpuId         uint32
+		KernelStackId int32
+		ReasonFlags   uint32
+		Pad64         uint64
+	}
+
+	var raw offCpuEventRaw
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -58,51 +72,65 @@ func ProcessOffCPU(coll *ebpf.Collection, ctx context.Context) {
 				log.Errorf("failed to read off_cpu event: %v", err)
 				continue
 			}
-
-			// 解析二进制数据
-			if err := event.UnmarshalBinary(record.RawSample); err != nil {
-				log.Errorf("failed to unmarshal off_cpu event: %v", err)
+			// 解析二进制数据（按小端）
+			buf := bytes.NewReader(record.RawSample)
+			if err := binary.Read(buf, binary.LittleEndian, &raw); err != nil {
+				log.Errorf("failed to parse off_cpu raw event: %v", err)
 				continue
 			}
 
-			// 记录离开 CPU 的时间
-			lastOffCPUTime.Store(event.Pid, event.TsLeave)
+			// 构造简化事件对象并处理
+			pid := raw.Pid
+			tsLeave := raw.TsLeave
 
-			// 更新或创建 Off-CPU 堆栈缓存
-			updateOffCPUStack(event)
+			// 记录离开 CPU 的时间
+			lastOffCPUTime.Store(pid, tsLeave)
+
+			// 使用解析结果更新或创建 Off-CPU 堆栈缓存
+			ev := struct{
+				Pid uint32
+				TsLeave uint64
+				KernelStackId int32
+			}{
+				Pid: pid,
+				TsLeave: tsLeave,
+				KernelStackId: raw.KernelStackId,
+			}
+			updateOffCPUStackParsed(ev)
 
 			// 同步到调度指标中
-			syncOffCPUToMetrics(event.Pid)
+			syncOffCPUToMetrics(pid)
 		}
 	}
 }
 
-func updateOffCPUStack(event binary.ShepherdOffCpuEventT) {
+func updateOffCPUStackParsed(event struct{Pid uint32; TsLeave uint64; KernelStackId int32}) {
 	pid := event.Pid
 
-	// 查询现有堆栈数据
 	existing, exists := offCPUStackCache.Load(pid)
 	if !exists {
-		// 首次创建
 		stack := OffCPUStack{
-			Pid:            pid,
-			KernelStackID:  event.KernelStackId,
-			Count:          1,
-			LastUpdateTs:   event.TsLeave,
+			Pid:           pid,
+			KernelStackID: event.KernelStackId,
+			Count:         1,
+			LastUpdateTs:  event.TsLeave,
 		}
 		offCPUStackCache.Store(pid, stack)
 		return
 	}
 
 	stack := existing.(OffCPUStack)
-
-	// 如果堆栈 ID 相同，累加计数和时间
 	if stack.KernelStackID == event.KernelStackId {
 		stack.Count++
 		stack.LastUpdateTs = event.TsLeave
 		offCPUStackCache.Store(pid, stack)
+	} else {
+		// 不同堆栈：简单策略为覆盖为最新堆栈
+		stack.KernelStackID = event.KernelStackId
+		stack.Count = 1
+		stack.LastUpdateTs = event.TsLeave
+		offCPUStackCache.Store(pid, stack)
 	}
-	// 否则只更新（实际生产中可能需要维护多个堆栈）
 }
 
 func syncOffCPUToMetrics(pid uint32) {
