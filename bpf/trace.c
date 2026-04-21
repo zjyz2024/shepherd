@@ -35,12 +35,34 @@ struct sched_latency_t
 
 struct sched_latency_t *unused_sched_latency_t __attribute__((unused));
 
+// Phase 2: Off-CPU 事件采样
+struct off_cpu_event_t
+{
+    __u64 ts_leave;            // 离开 CPU 的时间戳
+    __u32 pid;                 // 进程ID
+    __u32 tid;                 // 线程ID
+    char comm[16];             // 进程名
+    __u32 cpu_id;              // CPU 核心 ID
+    __s32 kernel_stack_id;     // 内核调用栈 ID
+    __u32 reason_flags;        // 预留字段：离开原因
+    __u64 pad64;               // 对齐填充
+} __attribute__((packed));
+
+struct off_cpu_event_t *unused_off_cpu_event_t __attribute__((unused));
+
 // 定义 ring buffer 用于传输数据到用户空间
 struct
 {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
     __uint(max_entries, 256 * 1024);
 } sched_events SEC(".maps");
+
+// Phase 2: Off-CPU 事件输出
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(max_entries, 256 * 1024);
+} off_cpu_events SEC(".maps");
 
 // 用于临时存储唤醒时间的 hash map
 struct
@@ -319,6 +341,29 @@ static __always_inline void handle_sched_switch(u32 prev_pid, u32 prev_tgid,
     __u64 *wakeup_ts;
     __u64 now = bpf_ktime_get_ns();
     u32 key = 0;
+
+    // Phase 2: 采样离开 CPU 的进程（Off-CPU）
+    // 这与调度延迟计算并行，不影响既有逻辑
+    if (prev_pid != 0)
+    {
+        struct off_cpu_event_t off_cpu = {
+            .ts_leave = now,
+            .pid = prev_tgid ? prev_tgid : prev_pid,
+            .tid = prev_pid,
+            .cpu_id = bpf_get_smp_processor_id(),
+        };
+        
+        bpf_probe_read_kernel_str(&off_cpu.comm, sizeof(off_cpu.comm), prev_comm);
+        
+        // 采样内核堆栈
+        off_cpu.kernel_stack_id = bpf_get_stackid(ctx, &stack_traces, BPF_F_FAST_STACK_CMP);
+        
+        // 采样率控制：1/100 概率采样 Off-CPU 事件
+        if (bpf_get_prandom_u32() % 100 == 0)
+        {
+            bpf_perf_event_output(ctx, &off_cpu_events, BPF_F_CURRENT_CPU, &off_cpu, sizeof(off_cpu));
+        }
+    }
 
     if (prev_pid == 0 || next_pid == 0)
     {

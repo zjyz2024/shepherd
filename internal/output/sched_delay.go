@@ -37,6 +37,9 @@ func ProcessSchedDelay(coll *ebpf.Collection, ctx context.Context, cfg config.Co
 	// 确保退出时冲刷缓存并关闭连接
 	defer output.Close()
 
+	// Phase 2: 启动 Off-CPU 事件处理 goroutine
+	go ProcessOffCPU(coll, ctx)
+
 	var event binary.ShepherdSchedLatencyT
 	for {
 		// 在循环开始时就检查 context
