@@ -64,6 +64,26 @@ struct
     __uint(max_entries, 256 * 1024);
 } off_cpu_events SEC(".maps");
 
+// Phase 4: CPU 迁移事件输出
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(max_entries, 256 * 1024);
+} migrate_events SEC(".maps");
+
+// Phase 4: 迁移事件结构体
+struct migrate_event_t {
+    __u64 ts;
+    __u32 pid;
+    __u32 tgid;
+    __s32 orig_cpu;
+    __s32 dest_cpu;
+    char comm[16];
+    __u64 pad;
+} __attribute__((packed));
+
+struct migrate_event_t *unused_migrate_event_t __attribute__((unused));
+
 // 用于临时存储唤醒时间的 hash map
 struct
 {
@@ -493,6 +513,46 @@ int sched_switch(struct trace_event_raw_sched_switch *ctx)
 {
     handle_sched_switch(ctx->prev_pid, 0, ctx->next_pid, 0,
                         ctx->prev_state, ctx->prev_comm, ctx->next_comm, ctx);
+    return 0;
+}
+#endif
+
+// Phase 4: sched_migrate_task tracepoint handler
+#if LINUX_KERNEL_VERSION >= KERNEL_VERSION(5, 10, 0)
+SEC("tp_btf/sched_migrate_task")
+int sched_migrate_task_tp(void *ctx)
+{
+    struct task_struct *task = (struct task_struct *)ctx[1];
+    int dest_cpu = (int)ctx[2];
+
+    u32 pid = BPF_CORE_READ(task, pid);
+    u32 tgid = BPF_CORE_READ(task, tgid);
+    int orig_cpu = bpf_get_smp_processor_id();
+
+    struct migrate_event_t ev = {};
+    ev.ts = bpf_ktime_get_ns();
+    ev.pid = pid;
+    ev.tgid = tgid;
+    ev.orig_cpu = orig_cpu;
+    ev.dest_cpu = dest_cpu;
+    bpf_probe_read_kernel_str(&ev.comm, sizeof(ev.comm), task->comm);
+
+    bpf_perf_event_output(ctx, &migrate_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+    return 0;
+}
+#else
+SEC("tp/sched/sched_migrate_task")
+int sched_migrate_task_raw(struct trace_event_raw_sched_migrate_task *ctx)
+{
+    struct migrate_event_t ev = {};
+    ev.ts = bpf_ktime_get_ns();
+    ev.pid = ctx->pid;
+    ev.tgid = ctx->pid;
+    ev.orig_cpu = ctx->orig_cpu;
+    ev.dest_cpu = ctx->dest_cpu;
+    bpf_probe_read_kernel_str(&ev.comm, sizeof(ev.comm), ctx->comm);
+
+    bpf_perf_event_output(ctx, &migrate_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
     return 0;
 }
 #endif

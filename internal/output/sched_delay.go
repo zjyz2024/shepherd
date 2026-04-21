@@ -39,6 +39,8 @@ func ProcessSchedDelay(coll *ebpf.Collection, ctx context.Context, cfg config.Co
 
 	// Phase 2: 启动 Off-CPU 事件处理 goroutine
 	go ProcessOffCPU(coll, ctx)
+	// Phase 4: 启动 CPU 迁移事件处理
+	go ProcessMigrate(coll, ctx)
 
 	var event binary.ShepherdSchedLatencyT
 	for {
