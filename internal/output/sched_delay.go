@@ -70,6 +70,13 @@ func ProcessSchedDelay(coll *ebpf.Collection, ctx context.Context, cfg config.Co
 				StackId:           event.StackId,
 			}
 
+			// Phase 1: 初始化上下文切换计数
+			if event.IsVoluntary == 1 {
+				schedMetrics.VoluntaryCtxtSwitches = 1
+			} else {
+				schedMetrics.InvoluntaryCtxtSwitches = 1
+			}
+
 			// 1. 尝试从缓存中查找该进程已有的统计数据
 			current, isExist := cache.SchedMetricsMap.Load(event.Pid)
 			if !isExist {
@@ -85,6 +92,13 @@ func ProcessSchedDelay(coll *ebpf.Collection, ctx context.Context, cfg config.Co
 			}
 
 			currentSchedMetrics.DelayNs = event.DelayNs + currentSchedMetrics.DelayNs
+
+			// Phase 1: 累加上下文切换计数
+			if event.IsVoluntary == 1 {
+				currentSchedMetrics.VoluntaryCtxtSwitches++
+			} else {
+				currentSchedMetrics.InvoluntaryCtxtSwitches++
+			}
 
 			// 1. 判断是否发生了“强行抢占”
 			if event.IsPreempt != 1 {

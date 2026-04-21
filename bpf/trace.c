@@ -28,6 +28,9 @@ struct sched_latency_t
     __u64 softirq_duration_ns; // 调度延迟期间的软中断耗时
     __u64 mem_reclaim_ns;      // 调度延迟期间的内存直接回收耗时
     __s32 stack_id;            // 内核调用栈ID
+    // Phase 1: 上下文切换统计
+    __u8 is_voluntary;         // 1: 自愿切换, 0: 非自愿（被抢占）
+    __u8 prev_state_raw;       // 原始的 prev_state 值（用于诊断）
 } __attribute__((packed));
 
 struct sched_latency_t *unused_sched_latency_t __attribute__((unused));
@@ -390,13 +393,20 @@ static __always_inline void handle_sched_switch(u32 prev_pid, u32 prev_tgid,
 
     bpf_probe_read_kernel_str(&latency.comm, sizeof(latency.comm), next_comm);
 
-    // 如果前一个状态是 TASK_RUNNING，则认为是抢占
+    // 如果前一个状态是 TASK_RUNNING，则认为是抢占（非自愿切换）
     if (prev_state == TASK_RUNNING)
     {
         latency.is_preempt = 1;
+        latency.is_voluntary = 0;  // 非自愿切换
         latency.preempted_pid = prev_tgid ? prev_tgid : prev_pid;
         bpf_probe_read_kernel_str(&latency.preempted_comm, sizeof(latency.preempted_comm), prev_comm);
     }
+    else
+    {
+        latency.is_voluntary = 1;  // 自愿切换
+    }
+
+    latency.prev_state_raw = (__u8)prev_state;
 
     bpf_printk("pid: %d, delay: %llu ns, is_preempt: %d\n",
                latency.pid, latency.delay_ns, latency.is_preempt);
