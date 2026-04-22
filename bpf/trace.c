@@ -597,4 +597,149 @@ int sched_migrate_task_raw(struct trace_event_raw_sched_migrate_task *ctx)
 }
 #endif
 
+// =========================================================================
+// Memory Dimension - Phase M1: Allocation Latency
+// =========================================================================
+// 挂载点：
+//   kprobe/__alloc_pages (5.12+) 或 __alloc_pages_nodemask (< 5.12)
+//   kretprobe 对应函数，用于计算 duration
+// 采样策略：
+//   fast path (duration < ALLOC_SLOW_THRESHOLD_NS)    1/1000
+//   mid  path (>= 100µs && < slow)                    强制输出（不采栈）
+//   slow path (>= ALLOC_SLOW_THRESHOLD_NS)            100% 输出 + 内核栈
+
+#define ALLOC_SLOW_THRESHOLD_NS 1000000   // 1ms
+#define ALLOC_MID_THRESHOLD_NS  100000    // 100µs
+#define ALLOC_FAST_SAMPLE       1000      // 1/1000
+
+struct mem_alloc_event_t {
+    __u64 ts;                // 事件时间戳（kretprobe 返回时刻）
+    __u64 duration_ns;       // 本次分配耗时
+    __u32 pid;               // 线程 ID
+    __u32 tgid;              // 进程 ID
+    __u32 order;             // 分配页的 order
+    __u32 gfp_flags;         // GFP 标志
+    __s32 stack_id;          // 内核栈 ID（仅 slow path 采集）
+    __u8  path_type;         // 0=fast, 1=mid, 2=slow
+    __u8  pad0[3];
+    char  comm[16];
+    __u64 pad1;
+} __attribute__((packed));
+
+struct mem_alloc_event_t *unused_mem_alloc_event_t __attribute__((unused));
+
+// kprobe entry 上下文：保存本次分配的入口信息
+struct alloc_ctx_t {
+    __u64 ts;
+    __u32 order;
+    __u32 gfp_flags;
+};
+
+// 记录每个 tid 的分配开始信息（kprobe → kretprobe 之间）
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 10240);
+    __type(key, __u32);
+    __type(value, struct alloc_ctx_t);
+} alloc_start SEC(".maps");
+
+// 输出事件
+struct {
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(max_entries, 256 * 1024);
+} mem_alloc_events SEC(".maps");
+
+static __always_inline int handle_alloc_enter(struct pt_regs *ctx, __u32 order, __u32 gfp_flags)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 tid = (__u32)pid_tgid;
+
+    struct alloc_ctx_t actx = {};
+    actx.ts = bpf_ktime_get_ns();
+    actx.order = order;
+    actx.gfp_flags = gfp_flags;
+
+    bpf_map_update_elem(&alloc_start, &tid, &actx, BPF_ANY);
+    return 0;
+}
+
+static __always_inline int handle_alloc_exit(struct pt_regs *ctx)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 tid = (__u32)pid_tgid;
+    __u32 tgid = pid_tgid >> 32;
+
+    struct alloc_ctx_t *actx = bpf_map_lookup_elem(&alloc_start, &tid);
+    if (!actx)
+        return 0;
+
+    __u64 now = bpf_ktime_get_ns();
+    __u64 duration = now - actx->ts;
+
+    __u8 path_type;
+    if (duration >= ALLOC_SLOW_THRESHOLD_NS) {
+        path_type = 2; // slow
+    } else if (duration >= ALLOC_MID_THRESHOLD_NS) {
+        path_type = 1; // mid
+    } else {
+        // fast path: 采样 1/ALLOC_FAST_SAMPLE
+        if (bpf_get_prandom_u32() % ALLOC_FAST_SAMPLE != 0) {
+            bpf_map_delete_elem(&alloc_start, &tid);
+            return 0;
+        }
+        path_type = 0;
+    }
+
+    struct mem_alloc_event_t ev = {};
+    ev.ts = now;
+    ev.duration_ns = duration;
+    ev.pid = tid;
+    ev.tgid = tgid ? tgid : tid;
+    ev.order = actx->order;
+    ev.gfp_flags = actx->gfp_flags;
+    ev.path_type = path_type;
+    ev.stack_id = -1;
+
+    // 仅 slow path 采集栈（频率低，开销可控）
+    if (path_type == 2) {
+        ev.stack_id = bpf_get_stackid(ctx, &stack_traces, BPF_F_FAST_STACK_CMP);
+    }
+
+    bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
+
+    bpf_perf_event_output(ctx, &mem_alloc_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+
+    bpf_map_delete_elem(&alloc_start, &tid);
+    return 0;
+}
+
+// 5.12+ 使用 __alloc_pages(gfp_t gfp, unsigned int order, int preferred_nid, nodemask_t *nodemask)
+// 旧内核使用 __alloc_pages_nodemask(gfp_t gfp, unsigned int order, int preferred_nid, nodemask_t *nodemask)
+// 两者参数布局一致，统一读 PT_REGS_PARM1/PARM2
+#if LINUX_KERNEL_VERSION >= KERNEL_VERSION(5, 12, 0)
+SEC("kprobe/__alloc_pages")
+int BPF_KPROBE(alloc_pages_enter, unsigned int gfp, unsigned int order)
+{
+    return handle_alloc_enter(ctx, order, gfp);
+}
+
+SEC("kretprobe/__alloc_pages")
+int BPF_KRETPROBE(alloc_pages_exit)
+{
+    return handle_alloc_exit(ctx);
+}
+#else
+SEC("kprobe/__alloc_pages_nodemask")
+int BPF_KPROBE(alloc_pages_enter, unsigned int gfp, unsigned int order)
+{
+    return handle_alloc_enter(ctx, order, gfp);
+}
+
+SEC("kretprobe/__alloc_pages_nodemask")
+int BPF_KRETPROBE(alloc_pages_exit)
+{
+    return handle_alloc_exit(ctx);
+}
+#endif
+
 char __license[] SEC("license") = "Dual BSD/GPL";

@@ -8,6 +8,7 @@ import (
 
 func InitPrometheusMetrics(r *gin.Engine) {
 	schedMetrics := output.NewSchedMetrics(cache.SchedMetricsMap, cache.SchedPreemptedMap)
-	traceMetrics := output.NewTraceMetrics(schedMetrics)
+	memMetrics := output.NewMemMetrics(cache.MemAllocMap)
+	traceMetrics := output.NewTraceMetrics(schedMetrics, memMetrics)
 	r.GET("/metrics", traceMetrics.MetricsHandler())
 }

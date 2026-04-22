@@ -20,11 +20,13 @@ const (
 
 type TraceMetrics struct {
 	SchedMetrics *SchedMetrics
+	MemMetrics   *MemMetrics
 }
 
-func NewTraceMetrics(schedMetrics *SchedMetrics) *TraceMetrics {
+func NewTraceMetrics(schedMetrics *SchedMetrics, memMetrics *MemMetrics) *TraceMetrics {
 	return &TraceMetrics{
 		SchedMetrics: schedMetrics,
+		MemMetrics:   memMetrics,
 	}
 }
 
@@ -109,6 +111,54 @@ func (m *TraceMetrics) MetricsHandler() gin.HandlerFunc {
 
 	return func(c *gin.Context) {
 		m.SchedMetrics.UpdateMetricsFromCache(nodeName)
+		if m.MemMetrics != nil {
+			m.MemMetrics.UpdateMemMetricsFromCache(nodeName)
+		}
 		h.ServeHTTP(c.Writer, c.Request)
 	}
+}
+
+// =========================================================================
+// Memory Dimension - Phase M1: Allocation Latency
+// =========================================================================
+
+// MemMetrics 聚合内存维度的 Prometheus gauge
+type MemMetrics struct {
+	AllocCount         *prometheus.GaugeVec // 累计分配次数
+	AllocSlowPathCount *prometheus.GaugeVec // 慢路径次数 (>=1ms)
+	AllocMidPathCount  *prometheus.GaugeVec // 中速路径次数 (>=100µs)
+	AllocAvgNs         *prometheus.GaugeVec // 平均分配耗时
+	AllocMaxNs         *prometheus.GaugeVec // 单次最大耗时
+	MemAllocMap        *sync.Map
+}
+
+func NewMemMetrics(memAllocMap *sync.Map) *MemMetrics {
+	return &MemMetrics{
+		AllocCount:         createGaugeVec("mem_alloc_count", "total page allocation count per task (sampled)", []string{"pid", "comm"}),
+		AllocSlowPathCount: createGaugeVec("mem_alloc_slow_path_count", "page allocation slow path count (>=1ms) per task", []string{"pid", "comm"}),
+		AllocMidPathCount:  createGaugeVec("mem_alloc_mid_path_count", "page allocation mid path count (>=100us) per task", []string{"pid", "comm"}),
+		AllocAvgNs:         createGaugeVec("mem_alloc_avg_duration_ns", "average page allocation duration (ns) per task", []string{"pid", "comm"}),
+		AllocMaxNs:         createGaugeVec("mem_alloc_max_duration_ns", "max page allocation duration (ns) per task", []string{"pid", "comm"}),
+		MemAllocMap:        memAllocMap,
+	}
+}
+
+func (m *MemMetrics) UpdateMemMetricsFromCache(nodeName string) {
+	m.MemAllocMap.Range(func(key, value interface{}) bool {
+		mm := value.(metadata.MemAllocMetrics)
+		pidStr := fmt.Sprintf("%d", mm.Pid)
+		m.AllocCount.WithLabelValues(pidStr, mm.Comm).Set(float64(mm.AllocCount))
+		if mm.SlowPathCount > 0 {
+			m.AllocSlowPathCount.WithLabelValues(pidStr, mm.Comm).Set(float64(mm.SlowPathCount))
+		}
+		if mm.MidPathCount > 0 {
+			m.AllocMidPathCount.WithLabelValues(pidStr, mm.Comm).Set(float64(mm.MidPathCount))
+		}
+		if mm.AllocCount > 0 {
+			avg := mm.TotalAllocNs / mm.AllocCount
+			m.AllocAvgNs.WithLabelValues(pidStr, mm.Comm).Set(float64(avg))
+		}
+		m.AllocMaxNs.WithLabelValues(pidStr, mm.Comm).Set(float64(mm.MaxAllocNs))
+		return true
+	})
 }

@@ -33,7 +33,22 @@ const (
 	ColSetOffCPU
 	ColSetPriorityInversion
 	ColSetFull
+	// === Phase M1+: Memory 视图的列组 ===
+	ColSetMemAlloc
+	ColSetMemReclaim
+	ColSetMemLeak
+	ColSetMemFault
+	ColSetMemOOM
+	ColSetMemFull
 	ColSetMax
+)
+
+// 调度视图 ColumnSet 的边界（[SchedBegin, SchedEnd]），供 'l' 键循环使用
+const (
+	schedColSetBegin = ColSetBasic
+	schedColSetEnd   = ColSetFull
+	memColSetBegin   = ColSetMemAlloc
+	memColSetEnd     = ColSetMemFull
 )
 
 type Column struct {
@@ -89,6 +104,28 @@ var columnDefinitions = map[ColumnSet][]Column{
 		{name: "offcpu_time", label: "OFF_CPU(ms)", width: 15, alignLeft: false},
 		{name: "pi_count", label: "PI_COUNT", width: 12, alignLeft: false},
 		{name: "max_block_time", label: "MAX_BLOCK(ms)", width: 15, alignLeft: false},
+	},
+	// === Phase M1: Memory 视图列组 ===
+	ColSetMemAlloc: {
+		{name: "pid", label: "PID", width: 8, alignLeft: false},
+		{name: "comm", label: "COMM", width: 20, alignLeft: true},
+		{name: "alloc_cnt", label: "ALLOC_CNT", width: 12, alignLeft: false},
+		{name: "slow_cnt", label: "SLOW_CNT", width: 10, alignLeft: false},
+		{name: "mid_cnt", label: "MID_CNT", width: 10, alignLeft: false},
+		{name: "avg_us", label: "AVG(us)", width: 12, alignLeft: false},
+		{name: "max_us", label: "MAX(us)", width: 12, alignLeft: false},
+		{name: "order_hist", label: "ORDER_HIST", width: 13, alignLeft: true},
+		{name: "stack", label: "SLOW_STACK", width: 30, alignLeft: true},
+	},
+	ColSetMemFull: {
+		{name: "pid", label: "PID", width: 8, alignLeft: false},
+		{name: "comm", label: "COMM", width: 20, alignLeft: true},
+		{name: "alloc_cnt", label: "ALLOC_CNT", width: 12, alignLeft: false},
+		{name: "slow_cnt", label: "SLOW_CNT", width: 10, alignLeft: false},
+		{name: "avg_us", label: "AVG(us)", width: 12, alignLeft: false},
+		{name: "max_us", label: "MAX(us)", width: 12, alignLeft: false},
+		{name: "order_hist", label: "ORDER_HIST", width: 13, alignLeft: true},
+		{name: "stack", label: "SLOW_STACK", width: 30, alignLeft: true},
 	},
 }
 
@@ -148,40 +185,81 @@ func listenKeyboard(cancel context.CancelFunc) {
 		// 按 'n' 或 'N' 切换视图
 		if char == 'n' || char == 'N' {
 			currentView = (currentView + 1) % ViewMax
-			if currentView == ViewScheduling {
+			// 视图切换时，根据目标视图重置 ColumnSet
+			switch currentView {
+			case ViewScheduling:
 				currentLayout.columnSet = ColSetBasic
-				currentLayout.scrollOffset = 0
+				currentLayout.sortField = "latency"
+			case ViewMemory:
+				currentLayout.columnSet = ColSetMemAlloc
+				currentLayout.sortField = "alloc_ns"
 			}
+			currentLayout.scrollOffset = 0
 		}
 
 		// 按 'd' 或 'D' 回到调度视图
 		if char == 'd' || char == 'D' {
 			currentView = ViewScheduling
 			currentLayout.columnSet = ColSetBasic
+			currentLayout.sortField = "latency"
 			currentLayout.scrollOffset = 0
 		}
 
-		// 按 'l' 或 'L' 循环切换列组
-		if (char == 'l' || char == 'L') && currentView == ViewScheduling {
-			currentLayout.columnSet = (currentLayout.columnSet + 1) % ColSetMax
+		// 按 'm' 或 'M' 直跳内存视图
+		if char == 'm' || char == 'M' {
+			currentView = ViewMemory
+			currentLayout.columnSet = ColSetMemAlloc
+			currentLayout.sortField = "alloc_ns"
 			currentLayout.scrollOffset = 0
 		}
 
-		// 按 't' 或 'T' 切换排序字段
+		// 按 'l' 或 'L' 循环切换列组（按视图隔离范围）
+		if char == 'l' || char == 'L' {
+			switch currentView {
+			case ViewScheduling:
+				next := currentLayout.columnSet + 1
+				if next > schedColSetEnd {
+					next = schedColSetBegin
+				}
+				currentLayout.columnSet = next
+			case ViewMemory:
+				next := currentLayout.columnSet + 1
+				if next > memColSetEnd {
+					next = memColSetBegin
+				}
+				currentLayout.columnSet = next
+			}
+			currentLayout.scrollOffset = 0
+		}
+
+		// 按 't' 或 'T' 切换排序字段（按视图隔离序列）
 		if char == 't' || char == 'T' {
-			switch currentLayout.sortField {
-			case "latency":
-				currentLayout.sortField = "preempt"
-			case "preempt":
-				currentLayout.sortField = "vol_ctx"
-			case "vol_ctx":
-				currentLayout.sortField = "invol_ctx"
-			case "invol_ctx":
-				currentLayout.sortField = "migrations"
-			case "migrations":
-				currentLayout.sortField = "pi_count"
-			default:
-				currentLayout.sortField = "latency"
+			if currentView == ViewMemory {
+				switch currentLayout.sortField {
+				case "alloc_ns":
+					currentLayout.sortField = "slow_count"
+				case "slow_count":
+					currentLayout.sortField = "alloc_cnt"
+				case "alloc_cnt":
+					currentLayout.sortField = "max_ns"
+				default:
+					currentLayout.sortField = "alloc_ns"
+				}
+			} else {
+				switch currentLayout.sortField {
+				case "latency":
+					currentLayout.sortField = "preempt"
+				case "preempt":
+					currentLayout.sortField = "vol_ctx"
+				case "vol_ctx":
+					currentLayout.sortField = "invol_ctx"
+				case "invol_ctx":
+					currentLayout.sortField = "migrations"
+				case "migrations":
+					currentLayout.sortField = "pi_count"
+				default:
+					currentLayout.sortField = "latency"
+				}
 			}
 			currentLayout.sortDescending = true
 		}
@@ -286,6 +364,10 @@ func formatStack(stackID int32) string {
 
 // 新的 renderCLI 实现：支持多列布局
 func renderCLI() {
+	if currentView == ViewMemory {
+		renderMemCLI()
+		return
+	}
 	if currentView != ViewScheduling {
 		renderCLILegacy()
 		return

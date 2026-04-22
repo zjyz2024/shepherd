@@ -18,6 +18,7 @@ import (
 	"github.com/cen-ngc5139/shepherd/server"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
+	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 	"golang.org/x/sys/unix"
 )
@@ -156,12 +157,39 @@ func Run(cfg config.Configuration) {
 		defer memreclaimTrace.Detach()
 	}
 
+	// Phase M1: 挂载 __alloc_pages kprobe + kretprobe（先试 5.12+ 的新名，再 fallback 旧名）
+	allocEnterProg := coll.Programs["alloc_pages_enter"]
+	allocExitProg := coll.Programs["alloc_pages_exit"]
+	if allocEnterProg != nil && allocExitProg != nil {
+		allocEnterLink, kerr := link.Kprobe("__alloc_pages", allocEnterProg, nil)
+		if kerr != nil {
+			// fallback: 5.12 之前叫 __alloc_pages_nodemask
+			allocEnterLink, kerr = link.Kprobe("__alloc_pages_nodemask", allocEnterProg, nil)
+		}
+		if kerr != nil {
+			log.Warningf("attach alloc_pages kprobe failed (memory dimension disabled): %v", kerr)
+		} else {
+			defer allocEnterLink.Close()
+
+			allocExitLink, kerr := link.Kretprobe("__alloc_pages", allocExitProg, nil)
+			if kerr != nil {
+				allocExitLink, kerr = link.Kretprobe("__alloc_pages_nodemask", allocExitProg, nil)
+			}
+			if kerr != nil {
+				log.Warningf("attach alloc_pages kretprobe failed: %v", kerr)
+			} else {
+				defer allocExitLink.Close()
+			}
+		}
+	}
+
 	// 启动任务管理器，从 ebpf map 中获取数据并进行处理
 	tm := NewTaskManager()
 	cliCtx, cliCancel := context.WithCancel(ctx)
 
 	tm.Add("服务器", func() error { return server.NewServer().Start() })
 	tm.Add("处理调度延迟", func() error { output.ProcessSchedDelay(coll, cliCtx, cfg); return nil })
+	tm.Add("处理内存分配", func() error { output.ProcessMemAlloc(coll, cliCtx); return nil })
 	tm.Add("诊断命令行", func() error { output.StartDiagnosticCLI(cliCtx, cliCancel, coll); return nil })
 	// 运行所有任务
 	if err := tm.Run(cliCtx); err != nil {
