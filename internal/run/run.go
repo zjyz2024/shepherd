@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	ebpfbinary "github.com/cen-ngc5139/shepherd/internal/binary"
 	"github.com/cen-ngc5139/shepherd/internal/bpf"
@@ -226,6 +227,8 @@ func Run(cfg config.Configuration) {
 	tm.Add("处理内存分配", func() error { output.ProcessMemAlloc(coll, cliCtx); return nil })
 	tm.Add("处理内存回收", func() error { output.ProcessMemReclaim(coll, cliCtx); return nil })
 	tm.Add("处理缺页异常", func() error { output.ProcessMemFault(coll, cliCtx); return nil })
+	tm.Add("处理内存泄漏", func() error { output.ProcessMemLeakEvents(coll, cliCtx); return nil })
+	tm.Add("内存泄漏扫描", func() error { output.RunLeakScanner(coll, cliCtx, 60*time.Second); return nil })
 	tm.Add("处理OOM事件", func() error { output.ProcessOOM(coll, cliCtx); return nil })
 	tm.Add("诊断命令行", func() error { output.StartDiagnosticCLI(cliCtx, cliCancel, coll); return nil })
 	// 运行所有任务

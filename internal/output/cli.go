@@ -48,7 +48,7 @@ const (
 	schedColSetBegin = ColSetBasic
 	schedColSetEnd   = ColSetFull
 	memColSetBegin   = ColSetMemAlloc
-	memColSetEnd     = ColSetMemFault
+	memColSetEnd     = ColSetMemOOM
 )
 
 type Column struct {
@@ -280,6 +280,12 @@ func listenKeyboard(cancel context.CancelFunc) {
 					currentLayout.sortField = "kswapd_wake"
 				case "kswapd_wake":
 					currentLayout.sortField = "direct_cnt"
+				case "direct_cnt":
+					currentLayout.sortField = "score"
+				case "score":
+					currentLayout.sortField = "total_bytes"
+				case "total_bytes":
+					currentLayout.sortField = "major_fault"
 				default:
 					currentLayout.sortField = "alloc_ns"
 				}

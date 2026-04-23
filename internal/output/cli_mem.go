@@ -31,6 +31,8 @@ func renderMemCLI() {
 		renderMemAllocTable()
 	case ColSetMemReclaim:
 		renderMemReclaimTable()
+	case ColSetMemLeak:
+		renderMemLeakTable()
 	case ColSetMemFault:
 		renderMemFaultTable()
 	case ColSetMemOOM:
@@ -177,7 +179,69 @@ func renderMemFaultRow(m *metadata.MemFaultMetrics, columns []Column) {
 	fmt.Print("\r\n")
 }
 
+// renderMemLeakTable 按 stack_id 聚合的泄漏嫌疑表（Phase M4）
+func renderMemLeakTable() {
+	var suspects []metadata.MemLeakSuspect
+	cache.MemLeakSuspectMap.Range(func(key, value interface{}) bool {
+		s := value.(metadata.MemLeakSuspect)
+		suspects = append(suspects, s)
+		return true
+	})
+
+	if len(suspects) == 0 {
+		fmt.Printf("  (无泄漏嫌疑)\r\n")
+		return
+	}
+
+	sortMemLeakSuspects(suspects, currentLayout.sortField, currentLayout.sortDescending)
+
+	columns := columnDefinitions[ColSetMemLeak]
+	renderTableHeader(columns)
+
+	displayCount := 20
+	if len(suspects) < displayCount {
+		displayCount = len(suspects)
+	}
+
+	for i := 0; i < displayCount; i++ {
+		renderMemLeakRow(&suspects[i], columns)
+	}
+}
+
+// renderMemLeakRow 渲染一行泄漏嫌疑
+func renderMemLeakRow(s *metadata.MemLeakSuspect, columns []Column) {
+	for _, col := range columns {
+		var cell string
+		switch col.name {
+		case "stack_id":
+			cell = fmt.Sprintf("%d", s.StackId)
+		case "symbol":
+			cell = s.TopSymbolNames
+		case "total_mb":
+			cell = fmt.Sprintf("%.1f", float64(s.TotalBytes)/1024/1024)
+		case "alloc_cnt":
+			cell = fmt.Sprintf("%d", s.AllocCount)
+		case "age_sec":
+			ageSec := float64(time.Now().UnixNano()-int64(s.FirstSeenTs)) / 1e9
+			cell = fmt.Sprintf("%.0f", ageSec)
+		case "score":
+			cell = fmt.Sprintf("%.2f", s.SuspectScore)
+		default:
+			cell = "-"
+		}
+
+		if col.alignLeft {
+			fmt.Printf("%-*s ", col.width, truncate(cell, col.width))
+		} else {
+			fmt.Printf("%*s ", col.width, truncate(cell, col.width))
+		}
+	}
+	fmt.Print("\r\n")
+}
+
 // renderHistogram 用 unicode block glyph 画单行直方图。
+
+
 // 桶数 = len(buckets)；单个字符一个桶。
 func renderHistogram(buckets []uint64) string {
 	glyphs := []rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
@@ -340,6 +404,27 @@ func sortMemReclaimMetrics(metrics []metadata.MemReclaimMetrics, field string, d
 	})
 }
 
+// sortMemLeakSuspects 排序泄漏嫌疑
+func sortMemLeakSuspects(suspects []metadata.MemLeakSuspect, field string, descending bool) {
+	sort.Slice(suspects, func(i, j int) bool {
+		var cmpI, cmpJ float64
+		switch field {
+		case "score":
+			cmpI, cmpJ = suspects[i].SuspectScore, suspects[j].SuspectScore
+		case "total_bytes":
+			cmpI, cmpJ = float64(suspects[i].TotalBytes), float64(suspects[j].TotalBytes)
+		case "alloc_cnt":
+			fallthrough
+		default:
+			cmpI, cmpJ = float64(suspects[i].AllocCount), float64(suspects[j].AllocCount)
+		}
+		if descending {
+			return cmpI > cmpJ
+		}
+		return cmpI < cmpJ
+	})
+}
+
 // renderOOMAlertBanner 在页面顶部渲染 OOM 告警（红色粗体）
 // 仅显示最近 5 分钟内的 OOM 事件
 func renderOOMAlertBanner() {
@@ -441,76 +526,6 @@ func renderMemOOMRow(ev *metadata.OOMEvent, columns []Column) {
 			cell = ev.TriggerComm
 		case "oom_score":
 			cell = fmt.Sprintf("%d", ev.OomScore)
-		default:
-			cell = "-"
-		}
-
-		if col.alignLeft {
-			fmt.Printf("%-*s ", col.width, truncate(cell, col.width))
-		} else {
-			fmt.Printf("%*s ", col.width, truncate(cell, col.width))
-		}
-	}
-	fmt.Print("\r\n")
-}
-
-// renderMemFaultTable 渲染缺页异常表
-func renderMemFaultTable() {
-	var metrics []metadata.MemFaultMetrics
-	cache.MemFaultMap.Range(func(key, value interface{}) bool {
-		m := value.(metadata.MemFaultMetrics)
-		metrics = append(metrics, m)
-		return true
-	})
-
-	if len(metrics) == 0 {
-		fmt.Printf("  (无缺页异常信息)\r\n")
-		return
-	}
-
-	// 按 major fault 数量降序排列
-	sort.Slice(metrics, func(i, j int) bool {
-		return metrics[i].MajorFaultCount > metrics[j].MajorFaultCount
-	})
-
-	columns := columnDefinitions[ColSetMemFault]
-	renderTableHeader(columns)
-
-	displayCount := 20
-	if len(metrics) < displayCount {
-		displayCount = len(metrics)
-	}
-
-	for i := 0; i < displayCount; i++ {
-		renderMemFaultRow(&metrics[i], columns)
-	}
-}
-
-// renderMemFaultRow 渲染一行缺页异常指标
-func renderMemFaultRow(m *metadata.MemFaultMetrics, columns []Column) {
-	for _, col := range columns {
-		var cell string
-		switch col.name {
-		case "pid":
-			cell = fmt.Sprintf("%d", m.Pid)
-		case "comm":
-			cell = m.Comm
-		case "major":
-			cell = fmt.Sprintf("%d", m.MajorFaultCount)
-		case "minor":
-			cell = fmt.Sprintf("%d", m.MinorFaultCount)
-		case "max_major_ms":
-			cell = fmt.Sprintf("%.3f", float64(m.MaxMajorFaultNs)/1e6)
-		case "avg_major_ms":
-			if m.MajorFaultCount > 0 {
-				avg := m.TotalMajorFaultNs / m.MajorFaultCount
-				cell = fmt.Sprintf("%.3f", float64(avg)/1e6)
-			} else {
-				cell = "0"
-			}
-		case "total_ms":
-			total := (m.TotalMajorFaultNs + m.TotalMinorFaultNs) / 1e6
-			cell = fmt.Sprintf("%.1f", float64(total))
 		default:
 			cell = "-"
 		}

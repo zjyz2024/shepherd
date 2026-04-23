@@ -147,6 +147,10 @@ type MemMetrics struct {
 	MaxMajorFaultNs *prometheus.GaugeVec // 单次 major fault 最大耗时
 	AvgMajorFaultNs *prometheus.GaugeVec // 平均 major fault 耗时
 
+	// Phase M4: Memory Leak
+	LeakSuspectBytes *prometheus.GaugeVec // 泄漏嫌疑总字节数 (per stack_id)
+	LeakSuspectScore *prometheus.GaugeVec // 泄漏置信度 (per stack_id)
+
 	// Phase M5: OOM Killer
 	OOMEventCount *prometheus.CounterVec // OOM 事件计数（Counter，单调递增）
 
@@ -175,6 +179,9 @@ func NewMemMetrics(memAllocMap, memReclaimMap *sync.Map) *MemMetrics {
 		MinorFaultCount: createGaugeVec("mem_minor_fault_count", "minor page fault count per task", []string{"pid", "comm"}),
 		MaxMajorFaultNs: createGaugeVec("mem_max_major_fault_duration_ns", "max major fault duration (ns) per task", []string{"pid", "comm"}),
 		AvgMajorFaultNs: createGaugeVec("mem_avg_major_fault_duration_ns", "average major fault duration (ns) per task", []string{"pid", "comm"}),
+
+		LeakSuspectBytes: createGaugeVec("mem_leak_suspect_bytes", "total leaked bytes per stack_id", []string{"stack_id", "symbol"}),
+		LeakSuspectScore: createGaugeVec("mem_leak_suspect_score", "leak confidence score [0,1] per stack_id", []string{"stack_id"}),
 
 		OOMEventCount: promauto.NewCounterVec(
 			prometheus.CounterOpts{
@@ -258,5 +265,16 @@ func (m *MemMetrics) UpdateMemMetricsFromCache(nodeName string) {
 		if len(oomEvents) > 0 {
 			m.OOMEventCount.WithLabelValues(nodeName).Add(float64(len(oomEvents)))
 		}
+	}
+
+	// Phase M4: 统计泄漏嫌疑
+	if cache.MemLeakSuspectMap != nil {
+		cache.MemLeakSuspectMap.Range(func(key, value interface{}) bool {
+			suspect := value.(metadata.MemLeakSuspect)
+			stackIdStr := fmt.Sprintf("%d", suspect.StackId)
+			m.LeakSuspectBytes.WithLabelValues(stackIdStr, suspect.TopSymbolNames).Set(float64(suspect.TotalBytes))
+			m.LeakSuspectScore.WithLabelValues(stackIdStr).Set(suspect.SuspectScore)
+			return true
+		})
 	}
 }

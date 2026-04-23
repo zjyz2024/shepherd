@@ -91,3 +91,20 @@ type MemFaultMetrics struct {
 	LastTs           uint64 // 最近一次事件时间戳
 }
 
+// =========================================================================
+// Phase M4: Memory Leak
+// =========================================================================
+
+// MemLeakSuspect 代表一个疑似泄漏的分配栈
+// 按 stack_id 聚合，不与 PID 绑定（因为栈可能跨多个进程）
+type MemLeakSuspect struct {
+	StackId        int32     // BPF stack_traces map 的 ID
+	TotalBytes     uint64    // 当前累积分配未释放的字节数
+	AllocCount     uint64    // 累积分配次数（采样，需反推）
+	FirstSeenTs    uint64    // 首次看到这个栈的时间戳
+	LastSeenTs     uint64    // 最近一次事件时间戳
+	SuspectScore   float64   // 泄漏置信度 [0,1]：long-lived + large-total + low-free-rate
+	TopSymbolNames string    // 栈顶 3 个符号，用 "->" 连接（CLI 显示用）
+}
+
+

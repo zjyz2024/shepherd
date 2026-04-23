@@ -34,6 +34,11 @@ var MemFaultMap *sync.Map
 // value: metadata.OOMEvent
 var OOMEventRing *RingBuffer
 
+// MemLeakSuspectMap 按 stack_id 聚合的泄漏嫌疑（Phase M4）
+// key: stack_id (int32)
+// value: metadata.MemLeakSuspect
+var MemLeakSuspectMap *sync.Map
+
 func init() {
 	SchedMetricsMap = new(sync.Map)
 	SchedPreemptedMap = new(sync.Map)
@@ -42,6 +47,7 @@ func init() {
 	MemReclaimMap = new(sync.Map)
 	MemFaultMap = new(sync.Map)
 	OOMEventRing = NewRingBuffer(32)
+	MemLeakSuspectMap = new(sync.Map)
 }
 
 // RingBuffer 定长环形缓冲，按时间顺序保留最近 N 条事件。
