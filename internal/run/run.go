@@ -149,6 +149,10 @@ func Run(cfg config.Configuration) {
 	memreclaimProgs := map[string]*ebpf.Program{
 		"mm_vmscan_direct_reclaim_begin": coll.Programs["direct_reclaim_begin"],
 		"mm_vmscan_direct_reclaim_end":   coll.Programs["direct_reclaim_end"],
+		// Phase M2: Reclaim Pressure
+		"mm_vmscan_kswapd_wake":          coll.Programs["kswapd_wake"],
+		"mm_vmscan_lru_shrink_inactive":  coll.Programs["lru_shrink_inactive"],
+		"mm_vmscan_lru_shrink_active":    coll.Programs["lru_shrink_active"],
 	}
 	memreclaimTrace, err := bpf.AttachTracingProgs(coll, memreclaimProgs, "vmscan")
 	if err != nil {
@@ -190,6 +194,7 @@ func Run(cfg config.Configuration) {
 	tm.Add("服务器", func() error { return server.NewServer().Start() })
 	tm.Add("处理调度延迟", func() error { output.ProcessSchedDelay(coll, cliCtx, cfg); return nil })
 	tm.Add("处理内存分配", func() error { output.ProcessMemAlloc(coll, cliCtx); return nil })
+	tm.Add("处理内存回收", func() error { output.ProcessMemReclaim(coll, cliCtx); return nil })
 	tm.Add("诊断命令行", func() error { output.StartDiagnosticCLI(cliCtx, cliCancel, coll); return nil })
 	// 运行所有任务
 	if err := tm.Run(cliCtx); err != nil {

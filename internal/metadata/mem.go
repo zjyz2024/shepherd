@@ -25,3 +25,27 @@ type MemAllocSlowPathEvent struct {
 	GfpFlags   uint32
 	StackId    int32
 }
+
+// =========================================================================
+// Phase M2: Reclaim Pressure
+// =========================================================================
+
+// MemReclaimMetrics 按 PID 聚合的回收压力统计
+// kswapd_wake 是全局事件，用 Pid=0 这一条特殊 entry 累计
+type MemReclaimMetrics struct {
+	Pid                uint32 // 进程 ID (tgid)；0 表示 kswapd 全局事件
+	Comm               string
+	DirectReclaimCount uint64 // direct reclaim 次数（事件计数）
+	DirectReclaimNs    uint64 // 累积 direct reclaim 耗时
+	MaxDirectReclaimNs uint64 // 单次最大 direct reclaim 耗时
+	NrReclaimedTotal   uint64 // 累积回收页数
+	NrScannedTotal     uint64 // 累积扫描页数
+	LRUInactiveCount   uint64 // lru_shrink_inactive 触发次数
+	LRUActiveCount     uint64 // lru_shrink_active 触发次数
+	KswapdWakeCount    uint64 // kswapd 唤醒次数（仅 Pid=0 entry 有效）
+	LastTs             uint64
+}
+
+// MemReclaimGlobalKey 用于 cache.MemReclaimMap 的 kswapd 全局聚合 entry 的特殊 key
+const MemReclaimGlobalKey uint32 = 0
+

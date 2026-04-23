@@ -272,6 +272,11 @@ int direct_reclaim_begin(u64 *ctx)
     u32 key = 0;
     u64 ts = bpf_ktime_get_ns();
     bpf_map_update_elem(&mem_reclaim_start, &key, &ts, BPF_ANY);
+
+    // Phase M2: 同时按 tid 记录 begin ts，用于 perf 事件输出
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 tid = (u32)pid_tgid;
+    bpf_map_update_elem(&reclaim_start_by_pid, &tid, &ts, BPF_ANY);
     return 0;
 }
 
@@ -279,10 +284,11 @@ SEC("tp_btf/mm_vmscan_direct_reclaim_end")
 int direct_reclaim_end(u64 *ctx)
 {
     u32 key = 0;
+    u64 now = bpf_ktime_get_ns();
     u64 *start_ts = bpf_map_lookup_elem(&mem_reclaim_start, &key);
     if (start_ts && *start_ts > 0)
     {
-        u64 duration = bpf_ktime_get_ns() - *start_ts;
+        u64 duration = now - *start_ts;
         u64 *cum_duration = bpf_map_lookup_elem(&mem_reclaim_cumulative_duration, &key);
         if (cum_duration)
         {
@@ -293,6 +299,33 @@ int direct_reclaim_end(u64 *ctx)
             bpf_map_update_elem(&mem_reclaim_cumulative_duration, &key, &duration, BPF_ANY);
         }
         *start_ts = 0;
+    }
+
+    // Phase M2: 从 tp_btf ctx 读取 nr_reclaimed（direct_reclaim_end_template 第 1 个参数）
+    // ctx[0] 是 struct trace_event_raw_mm_vmscan_direct_reclaim_end_template *
+    // 但在 tp_btf 模式下 ctx 的语义是 BTF 参数数组；第一个参数是 nr_reclaimed (unsigned long)
+    u64 nr_reclaimed = ctx[0];
+
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 tid = (u32)pid_tgid;
+    u32 tgid = pid_tgid >> 32;
+
+    u64 *pid_start = bpf_map_lookup_elem(&reclaim_start_by_pid, &tid);
+    if (pid_start && *pid_start > 0)
+    {
+        struct mem_reclaim_event_t ev = {};
+        ev.ts = now;
+        ev.duration_ns = now - *pid_start;
+        ev.pid = tid;
+        ev.tgid = tgid ? tgid : tid;
+        ev.nr_reclaimed = (u32)nr_reclaimed;
+        ev.is_direct = 1;
+        ev.is_kswapd = 0;
+        ev.lru_type = 0;
+        bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
+        bpf_perf_event_output(ctx, &mem_reclaim_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+
+        bpf_map_delete_elem(&reclaim_start_by_pid, &tid);
     }
     return 0;
 }
@@ -741,5 +774,114 @@ int BPF_KRETPROBE(alloc_pages_exit)
     return handle_alloc_exit(ctx);
 }
 #endif
+
+// =========================================================================
+// Memory Dimension - Phase M2: Reclaim Pressure
+// =========================================================================
+// 挂载点：
+//   已有 mm_vmscan_direct_reclaim_begin/end（扩展，见上方）
+//   新增：mm_vmscan_kswapd_wake
+//         mm_vmscan_lru_shrink_inactive
+//         mm_vmscan_lru_shrink_active
+//
+// 设计：
+//   - direct_reclaim 事件归属 PID（谁触发的 direct reclaim）
+//   - kswapd_wake 是全局事件（pid=0，只记 nid/order）
+//   - lru_shrink 在 kswapd/direct reclaim 流程中都会触发；按 current pid 归属
+
+struct mem_reclaim_event_t {
+    __u64 ts;
+    __u64 duration_ns;    // direct reclaim 整段耗时；lru_shrink 不填
+    __u32 pid;            // tid
+    __u32 tgid;           // process id；kswapd_wake 时为 0
+    __u32 nr_scanned;
+    __u32 nr_reclaimed;
+    __u32 order;          // kswapd_wake 用；其余 0
+    __s32 nid;            // NUMA node；非全节点事件填 -1
+    __u8  is_direct;      // 1: direct reclaim 事件
+    __u8  is_kswapd;      // 1: kswapd_wake 事件
+    __u8  lru_type;       // 0: 不适用 1: lru_shrink_inactive 2: lru_shrink_active
+    __u8  pad0;
+    char  comm[16];
+    __u32 pad1;
+} __attribute__((packed));
+
+struct mem_reclaim_event_t *unused_mem_reclaim_event_t __attribute__((unused));
+
+// 按 tid 记录 direct_reclaim begin ts（与现有 PERCPU mem_reclaim_start 并存）
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 10240);
+    __type(key, __u32);
+    __type(value, __u64);
+} reclaim_start_by_pid SEC(".maps");
+
+// Phase M2 事件输出
+struct {
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(max_entries, 256 * 1024);
+} mem_reclaim_events SEC(".maps");
+
+// kswapd_wake: 全局唤醒事件
+// trace_event_raw_mm_vmscan_kswapd_wake: { ent; int nid; int zid; int order; }
+SEC("tp_btf/mm_vmscan_kswapd_wake")
+int kswapd_wake(u64 *ctx)
+{
+    struct mem_reclaim_event_t ev = {};
+    ev.ts = bpf_ktime_get_ns();
+    ev.pid = 0;
+    ev.tgid = 0;
+    ev.is_kswapd = 1;
+    ev.is_direct = 0;
+    ev.lru_type = 0;
+    ev.nid = (__s32)ctx[0];
+    ev.order = (__u32)ctx[2];
+    bpf_perf_event_output(ctx, &mem_reclaim_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+    return 0;
+}
+
+// lru_shrink_inactive: { ent; int nid; ulong nr_scanned; ulong nr_reclaimed; ... }
+SEC("tp_btf/mm_vmscan_lru_shrink_inactive")
+int lru_shrink_inactive(u64 *ctx)
+{
+    struct mem_reclaim_event_t ev = {};
+    ev.ts = bpf_ktime_get_ns();
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    ev.pid = (u32)pid_tgid;
+    ev.tgid = pid_tgid >> 32;
+    if (ev.tgid == 0)
+        ev.tgid = ev.pid;
+    ev.lru_type = 1;
+    ev.is_direct = 0;
+    ev.is_kswapd = 0;
+    ev.nid = (__s32)ctx[0];
+    ev.nr_scanned = (__u32)ctx[1];
+    ev.nr_reclaimed = (__u32)ctx[2];
+    bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
+    bpf_perf_event_output(ctx, &mem_reclaim_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+    return 0;
+}
+
+// lru_shrink_active: { ent; int nid; ulong nr_taken; ulong nr_active; ulong nr_deactivated; ... }
+SEC("tp_btf/mm_vmscan_lru_shrink_active")
+int lru_shrink_active(u64 *ctx)
+{
+    struct mem_reclaim_event_t ev = {};
+    ev.ts = bpf_ktime_get_ns();
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    ev.pid = (u32)pid_tgid;
+    ev.tgid = pid_tgid >> 32;
+    if (ev.tgid == 0)
+        ev.tgid = ev.pid;
+    ev.lru_type = 2;
+    ev.is_direct = 0;
+    ev.is_kswapd = 0;
+    ev.nid = (__s32)ctx[0];
+    ev.nr_scanned = (__u32)ctx[1];   // nr_taken
+    ev.nr_reclaimed = (__u32)ctx[3]; // nr_deactivated
+    bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
+    bpf_perf_event_output(ctx, &mem_reclaim_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+    return 0;
+}
 
 char __license[] SEC("license") = "Dual BSD/GPL";

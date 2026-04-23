@@ -20,11 +20,17 @@ var MemAllocMap *sync.Map
 // MemAllocSlowPath 最近 N 条慢分配事件的环形缓冲（用于 CLI "慢分配红榜"）
 var MemAllocSlowPath *RingBuffer
 
+// MemReclaimMap 按 PID 聚合的内存回收压力统计（Phase M2）
+// key: pid (uint32, tgid)；0 表示 kswapd 全局事件聚合
+// value: metadata.MemReclaimMetrics
+var MemReclaimMap *sync.Map
+
 func init() {
 	SchedMetricsMap = new(sync.Map)
 	SchedPreemptedMap = new(sync.Map)
 	MemAllocMap = new(sync.Map)
 	MemAllocSlowPath = NewRingBuffer(64)
+	MemReclaimMap = new(sync.Map)
 }
 
 // RingBuffer 定长环形缓冲，按时间顺序保留最近 N 条事件。

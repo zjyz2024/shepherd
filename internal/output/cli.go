@@ -117,6 +117,18 @@ var columnDefinitions = map[ColumnSet][]Column{
 		{name: "order_hist", label: "ORDER_HIST", width: 13, alignLeft: true},
 		{name: "stack", label: "SLOW_STACK", width: 30, alignLeft: true},
 	},
+	// === Phase M2: Reclaim Pressure ===
+	ColSetMemReclaim: {
+		{name: "pid", label: "PID", width: 8, alignLeft: false},
+		{name: "comm", label: "COMM", width: 20, alignLeft: true},
+		{name: "direct_cnt", label: "DIRECT_CNT", width: 12, alignLeft: false},
+		{name: "direct_ms", label: "DIRECT(ms)", width: 12, alignLeft: false},
+		{name: "max_direct_ms", label: "MAX_DIRECT(ms)", width: 16, alignLeft: false},
+		{name: "kswapd_cnt", label: "KSWAPD_WAKE", width: 12, alignLeft: false},
+		{name: "lru_inactive", label: "LRU_INACT", width: 12, alignLeft: false},
+		{name: "lru_active", label: "LRU_ACT", width: 10, alignLeft: false},
+		{name: "nr_reclaimed", label: "PAGES_RCLMD", width: 13, alignLeft: false},
+	},
 	ColSetMemFull: {
 		{name: "pid", label: "PID", width: 8, alignLeft: false},
 		{name: "comm", label: "COMM", width: 20, alignLeft: true},
@@ -242,6 +254,12 @@ func listenKeyboard(cancel context.CancelFunc) {
 					currentLayout.sortField = "alloc_cnt"
 				case "alloc_cnt":
 					currentLayout.sortField = "max_ns"
+				case "max_ns":
+					currentLayout.sortField = "reclaim_ns"
+				case "reclaim_ns":
+					currentLayout.sortField = "kswapd_wake"
+				case "kswapd_wake":
+					currentLayout.sortField = "direct_cnt"
 				default:
 					currentLayout.sortField = "alloc_ns"
 				}

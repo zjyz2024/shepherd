@@ -27,8 +27,10 @@ func renderMemCLI() {
 	switch currentLayout.columnSet {
 	case ColSetMemAlloc, ColSetMemFull:
 		renderMemAllocTable()
+	case ColSetMemReclaim:
+		renderMemReclaimTable()
 	default:
-		// M2-M5 未实现时占位
+		// M3-M5 未实现时占位
 		fmt.Printf("\r\n  [ColumnSet %s] 尚未实现（后续 Phase 补齐）\r\n", colSetName)
 	}
 
@@ -175,5 +177,89 @@ func getMemColumnSetName(cs ColumnSet) string {
 
 func renderMemHints() {
 	fmt.Print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n")
-	fmt.Printf("Hints: l=列切换  t=排序(alloc_ns/slow_count/alloc_cnt/max_ns)  d=调度  n=其他视图  s=符号  r=重置  q=退出\r\n")
+	fmt.Printf("Hints: l=列切换  t=排序(alloc_ns/slow_count/alloc_cnt/max_ns/reclaim_ns/kswapd_wake)  d=调度  n=其他视图  s=符号  r=重置  q=退出\r\n")
+}
+
+// Phase M2: Reclaim Pressure 表格渲染
+func renderMemReclaimTable() {
+	columns := columnDefinitions[ColSetMemReclaim]
+
+	var metrics []metadata.MemReclaimMetrics
+	cache.MemReclaimMap.Range(func(key, value interface{}) bool {
+		m := value.(metadata.MemReclaimMetrics)
+		metrics = append(metrics, m)
+		return true
+	})
+
+	sortMemReclaimMetrics(metrics, currentLayout.sortField, currentLayout.sortDescending)
+
+	displayCount := 20
+	if len(metrics) < displayCount {
+		displayCount = len(metrics)
+	}
+
+	renderTableHeader(columns)
+	for i := 0; i < displayCount; i++ {
+		renderMemReclaimRow(&metrics[i], columns)
+	}
+}
+
+func renderMemReclaimRow(m *metadata.MemReclaimMetrics, columns []Column) {
+	for _, col := range columns {
+		var cell string
+		switch col.name {
+		case "pid":
+			if m.Pid == metadata.MemReclaimGlobalKey {
+				cell = "-"
+			} else {
+				cell = fmt.Sprintf("%d", m.Pid)
+			}
+		case "comm":
+			cell = m.Comm
+		case "direct_cnt":
+			cell = fmt.Sprintf("%d", m.DirectReclaimCount)
+		case "direct_ms":
+			cell = fmt.Sprintf("%.3f", float64(m.DirectReclaimNs)/1e6)
+		case "max_direct_ms":
+			cell = fmt.Sprintf("%.3f", float64(m.MaxDirectReclaimNs)/1e6)
+		case "kswapd_cnt":
+			cell = fmt.Sprintf("%d", m.KswapdWakeCount)
+		case "lru_inactive":
+			cell = fmt.Sprintf("%d", m.LRUInactiveCount)
+		case "lru_active":
+			cell = fmt.Sprintf("%d", m.LRUActiveCount)
+		case "nr_reclaimed":
+			cell = fmt.Sprintf("%d", m.NrReclaimedTotal)
+		default:
+			cell = "-"
+		}
+		if col.alignLeft {
+			fmt.Printf("%-*s ", col.width, truncate(cell, col.width))
+		} else {
+			fmt.Printf("%*s ", col.width, truncate(cell, col.width))
+		}
+	}
+	fmt.Print("\r\n")
+}
+
+func sortMemReclaimMetrics(metrics []metadata.MemReclaimMetrics, field string, descending bool) {
+	sort.Slice(metrics, func(i, j int) bool {
+		var a, b uint64
+		switch field {
+		case "kswapd_wake":
+			a, b = metrics[i].KswapdWakeCount, metrics[j].KswapdWakeCount
+		case "direct_cnt":
+			a, b = metrics[i].DirectReclaimCount, metrics[j].DirectReclaimCount
+		case "max_ns":
+			a, b = metrics[i].MaxDirectReclaimNs, metrics[j].MaxDirectReclaimNs
+		case "reclaim_ns":
+			fallthrough
+		default:
+			a, b = metrics[i].DirectReclaimNs, metrics[j].DirectReclaimNs
+		}
+		if descending {
+			return a > b
+		}
+		return a < b
+	})
 }
