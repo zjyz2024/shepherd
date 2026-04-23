@@ -21,8 +21,10 @@ type SinkCli struct {
 
 type CKCli struct {
 	conn    clickhouse.Conn
-	batch   ckdriver.Batch
+	batch   ckdriver.Batch    // sched_latency batch
 	counter int
+	// Phase M5: OOM 独立 batch（低频事件，立即发送）
+	oomBatch ckdriver.Batch
 }
 
 type Output struct {
@@ -56,8 +58,8 @@ func (o *Output) InitSinkCli(cfg config.OutputConfig) (err error) {
 
 		o.SinkCli.CKCli.batch, err = conn.PrepareBatch(o.ctx, `
 			INSERT INTO sched_latency (
-				pid, tid, delay_ns, ts, 
-				preempted_pid, preempted_comm, 
+				pid, tid, delay_ns, ts,
+				preempted_pid, preempted_comm,
 				is_preempt, comm,
 				preempted_pid_state,
 				irq_duration_ns, softirq_duration_ns, mem_reclaim_ns,
@@ -65,10 +67,24 @@ func (o *Output) InitSinkCli(cfg config.OutputConfig) (err error) {
 			)
 		`)
 		if err != nil {
-			return errors.Wrap(err, "failed to prepare batch")
+			return errors.Wrap(err, "failed to prepare sched_latency batch")
+		}
+
+		// Phase M5: 准备 OOM batch
+		o.SinkCli.CKCli.oomBatch, err = conn.PrepareBatch(o.ctx, `
+			INSERT INTO mem_oom_events (
+				ts, victim_pid, victim_comm, victim_rss_bytes,
+				trigger_pid, trigger_comm, oom_score, is_cgroup, top_processes
+			)
+		`)
+		if err != nil {
+			return errors.Wrap(err, "failed to prepare oom_events batch")
 		}
 
 		o.SinkCli.CKCli.conn = conn
+		// 在 mem_oom.go 中引用全局 oomBatch
+		oomBatch = o.SinkCli.CKCli.oomBatch
+		cliSink = &o.SinkCli
 	}
 
 	if o.SinkType == config.OutputTypeKafka {

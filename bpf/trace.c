@@ -884,4 +884,93 @@ int lru_shrink_active(u64 *ctx)
     return 0;
 }
 
+// =========================================================================
+// Memory Dimension - Phase M5: OOM Killer
+// =========================================================================
+// 挂载点：
+//   kprobe/oom_kill_process（稳定，所有内核）
+//   tp_btf/oom/mark_victim（5.10+，优先）
+
+struct mem_oom_event_t {
+    __u64 ts;
+    __u32 victim_pid;
+    __u32 victim_tgid;
+    __u64 victim_rss_bytes;
+    __u32 trigger_pid;      // 触发 OOM 的进程 PID
+    __u32 trigger_tgid;     // 触发 OOM 的进程 tgid
+    __u32 oom_score;        // oom_score_adj
+    __u8  is_cgroup;        // 1: cgroup OOM, 0: 全局 OOM
+    __u8  pad0[3];
+    char  victim_comm[16];
+    char  trigger_comm[16];
+    __u64 pad1;
+} __attribute__((packed));
+
+struct mem_oom_event_t *unused_mem_oom_event_t __attribute__((unused));
+
+// OOM 事件输出
+struct {
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(max_entries, 256 * 1024);
+} mem_oom_events SEC(".maps");
+
+// oom_kill_process kprobe 版本（兼容所有内核）
+// 签名：void oom_kill_process(struct oom_control *oc, const char *message)
+// 在 5.10+ 后简化为 void oom_kill_process(struct oom_control *oc)
+// 但参数布局基本一致，关键是读取 oc->chosen（选中的受害者任务）
+SEC("kprobe/oom_kill_process")
+int oom_kill_process_kprobe(struct pt_regs *ctx)
+{
+    // ctx->di 指向 struct oom_control *oc
+    // 从 oc 中读取 victim task
+    struct oom_control {
+        void *memcg;
+        void *nodemask;
+        void *gfp_mask;
+        int order;
+        void *chosen;           // struct task_struct *
+        void *chosen_memcg;
+        unsigned long totalpages;
+        struct task_struct *task;  // 触发 OOM 的任务
+        void *oc_lock;
+        enum oom_constraint constraint;
+    };
+
+    struct oom_control *oc = (struct oom_control *)PT_REGS_PARM1(ctx);
+    if (!oc)
+        return 0;
+
+    struct task_struct *chosen = (struct task_struct *)BPF_CORE_READ(oc, chosen);
+    struct task_struct *trigger_task = (struct task_struct *)BPF_CORE_READ(oc, task);
+
+    if (!chosen)
+        return 0;
+
+    struct mem_oom_event_t ev = {};
+    ev.ts = bpf_ktime_get_ns();
+    ev.victim_pid = BPF_CORE_READ(chosen, tgid);  // tgid 是 PID
+    ev.victim_tgid = BPF_CORE_READ(chosen, tgid);
+    // RSS 需要从 task 的 mm_struct 读取；但 BPF 中读取比较复杂，用 0 标记
+    // 实际值会由 Go 侧从 /proc/[pid]/status 补充
+    ev.victim_rss_bytes = 0;
+
+    if (trigger_task) {
+        ev.trigger_pid = BPF_CORE_READ(trigger_task, tgid);
+        ev.trigger_tgid = BPF_CORE_READ(trigger_task, tgid);
+        bpf_probe_read_kernel_str(&ev.trigger_comm, sizeof(ev.trigger_comm),
+                                  (void *)BPF_CORE_READ(trigger_task, comm));
+    }
+
+    bpf_probe_read_kernel_str(&ev.victim_comm, sizeof(ev.victim_comm),
+                              (void *)BPF_CORE_READ(chosen, comm));
+
+    // 尝试读取 oom_score_adj（在 task_struct 中，但偏移量可变）
+    // 为简化，设为 0；Go 侧可从 /proc/[pid]/oom_score_adj 补充
+    ev.oom_score = 0;
+    ev.is_cgroup = 0;
+
+    bpf_perf_event_output(ctx, &mem_oom_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+    return 0;
+}
+
 char __license[] SEC("license") = "Dual BSD/GPL";

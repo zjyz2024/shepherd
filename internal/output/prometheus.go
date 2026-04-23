@@ -140,6 +140,9 @@ type MemMetrics struct {
 	ReclaimLRUActive     *prometheus.GaugeVec // lru_shrink_active 次数
 	ReclaimPagesTotal    *prometheus.GaugeVec // 累积回收页数
 
+	// Phase M5: OOM Killer
+	OOMEventCount *prometheus.CounterVec // OOM 事件计数（Counter，单调递增）
+
 	MemAllocMap   *sync.Map
 	MemReclaimMap *sync.Map
 }
@@ -159,6 +162,14 @@ func NewMemMetrics(memAllocMap, memReclaimMap *sync.Map) *MemMetrics {
 		ReclaimLRUInactive:   createGaugeVec("mem_reclaim_lru_inactive_count", "mm_vmscan_lru_shrink_inactive event count per task", []string{"pid", "comm"}),
 		ReclaimLRUActive:     createGaugeVec("mem_reclaim_lru_active_count", "mm_vmscan_lru_shrink_active event count per task", []string{"pid", "comm"}),
 		ReclaimPagesTotal:    createGaugeVec("mem_reclaim_pages_total", "total pages reclaimed per task", []string{"pid", "comm"}),
+
+		OOMEventCount: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "mem_oom_kill_events_total",
+				Help: "total OOM kill events",
+			},
+			[]string{"node"},
+		),
 
 		MemAllocMap:   memAllocMap,
 		MemReclaimMap: memReclaimMap,
@@ -207,5 +218,13 @@ func (m *MemMetrics) UpdateMemMetricsFromCache(nodeName string) {
 			}
 			return true
 		})
+	}
+
+	// Phase M5: 统计 OOM 事件数
+	if cache.OOMEventRing != nil {
+		oomEvents := cache.OOMEventRing.Snapshot()
+		if len(oomEvents) > 0 {
+			m.OOMEventCount.WithLabelValues(nodeName).Add(float64(len(oomEvents)))
+		}
 	}
 }

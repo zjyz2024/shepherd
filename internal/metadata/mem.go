@@ -49,3 +49,28 @@ type MemReclaimMetrics struct {
 // MemReclaimGlobalKey 用于 cache.MemReclaimMap 的 kswapd 全局聚合 entry 的特殊 key
 const MemReclaimGlobalKey uint32 = 0
 
+// =========================================================================
+// Phase M5: OOM Killer
+// =========================================================================
+
+// OOMEvent 代表一次 OOM Kill 事件
+type OOMEvent struct {
+	Ts               uint64            // 事件时间戳
+	VictimPid        uint32            // 被杀进程 PID
+	VictimComm       string            // 被杀进程名
+	VictimRssBytes   uint64            // 被杀进程 RSS（字节）
+	TriggerPid       uint32            // 触发 OOM 的进程 PID
+	TriggerComm      string            // 触发 OOM 的进程名
+	OomScore         int32             // oom_score_adj
+	IsCgroup         bool              // 是否是 cgroup OOM
+	TopProcesses     []ProcessSnapshot // 时刻快照：其他 top N 进程
+}
+
+// ProcessSnapshot 用于 OOM 事件的进程快照（从 /proc 读取）
+type ProcessSnapshot struct {
+	Pid      uint32
+	Comm     string
+	RssBytes uint64
+	State    string // R/S/D/Z/T
+}
+

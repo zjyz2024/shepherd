@@ -187,6 +187,17 @@ func Run(cfg config.Configuration) {
 		}
 	}
 
+	// Phase M5: 挂载 oom_kill_process kprobe（稳定）
+	oomProg := coll.Programs["oom_kill_process_kprobe"]
+	if oomProg != nil {
+		oomLink, kerr := link.Kprobe("oom_kill_process", oomProg, nil)
+		if kerr != nil {
+			log.Warningf("attach oom_kill_process kprobe failed (OOM monitoring disabled): %v", kerr)
+		} else {
+			defer oomLink.Close()
+		}
+	}
+
 	// 启动任务管理器，从 ebpf map 中获取数据并进行处理
 	tm := NewTaskManager()
 	cliCtx, cliCancel := context.WithCancel(ctx)
@@ -195,6 +206,7 @@ func Run(cfg config.Configuration) {
 	tm.Add("处理调度延迟", func() error { output.ProcessSchedDelay(coll, cliCtx, cfg); return nil })
 	tm.Add("处理内存分配", func() error { output.ProcessMemAlloc(coll, cliCtx); return nil })
 	tm.Add("处理内存回收", func() error { output.ProcessMemReclaim(coll, cliCtx); return nil })
+	tm.Add("处理OOM事件", func() error { output.ProcessOOM(coll, cliCtx); return nil })
 	tm.Add("诊断命令行", func() error { output.StartDiagnosticCLI(cliCtx, cliCancel, coll); return nil })
 	// 运行所有任务
 	if err := tm.Run(cliCtx); err != nil {

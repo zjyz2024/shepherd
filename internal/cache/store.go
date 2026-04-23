@@ -25,12 +25,17 @@ var MemAllocSlowPath *RingBuffer
 // value: metadata.MemReclaimMetrics
 var MemReclaimMap *sync.Map
 
+// OOMEventRing 最近 N 条 OOM 事件的环形缓冲（用于 CLI 显示告警）
+// value: metadata.OOMEvent
+var OOMEventRing *RingBuffer
+
 func init() {
 	SchedMetricsMap = new(sync.Map)
 	SchedPreemptedMap = new(sync.Map)
 	MemAllocMap = new(sync.Map)
 	MemAllocSlowPath = NewRingBuffer(64)
 	MemReclaimMap = new(sync.Map)
+	OOMEventRing = NewRingBuffer(32)
 }
 
 // RingBuffer 定长环形缓冲，按时间顺序保留最近 N 条事件。
