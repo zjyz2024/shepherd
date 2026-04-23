@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/cen-ngc5139/shepherd/internal/cache"
 	"github.com/cen-ngc5139/shepherd/internal/metadata"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"

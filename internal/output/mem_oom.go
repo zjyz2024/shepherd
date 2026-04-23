@@ -14,6 +14,7 @@ import (
 	"github.com/cen-ngc5139/shepherd/internal/log"
 	"github.com/cen-ngc5139/shepherd/internal/metadata"
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/perf"
 )
 
 // oomBatch 和 cliSink 是全局变量，由 output.go 初始化
@@ -24,11 +25,17 @@ var (
 
 // ProcessOOM 从 eBPF perf buffer 读取 OOM 事件
 func ProcessOOM(coll *ebpf.Collection, ctx context.Context) error {
-	rd, err := coll.Readers["mem_oom_events"]
-	if err != nil {
-		return fmt.Errorf("oom_events reader not found: %w", err)
+	oomEvents := coll.Maps["mem_oom_events"]
+	if oomEvents == nil {
+		log.Warningf("mem_oom_events map not found in BPF collection")
+		return nil
 	}
-	defer rd.Close()
+
+	reader, err := perf.NewReader(oomEvents, os.Getpagesize())
+	if err != nil {
+		return fmt.Errorf("failed to create mem_oom event reader: %w", err)
+	}
+	defer reader.Close()
 
 	for {
 		select {
@@ -37,19 +44,19 @@ func ProcessOOM(coll *ebpf.Collection, ctx context.Context) error {
 		default:
 		}
 
-		record, err := rd.Read()
+		record, err := reader.Read()
 		if err != nil {
 			select {
 			case <-ctx.Done():
 				return nil
 			default:
-				log.Warnf("read oom_events error: %v", err)
+				log.Warningf("read mem_oom_events error: %v", err)
 				continue
 			}
 		}
 
 		if record.LostSamples > 0 {
-			log.Warnf("oom_events lost %d samples", record.LostSamples)
+			log.Warningf("mem_oom_events lost %d samples", record.LostSamples)
 		}
 
 		// 解析 BPF 事件
@@ -286,3 +293,34 @@ func sortByRssDesc(procs []metadata.ProcessSnapshot) {
 		}
 	}
 }
+
+// ===== 字节转换辅助函数 =====
+
+func bytesToU64(b []byte) uint64 {
+	if len(b) < 8 {
+		return 0
+	}
+	return uint64(b[0]) | (uint64(b[1]) << 8) | (uint64(b[2]) << 16) | (uint64(b[3]) << 24) |
+		(uint64(b[4]) << 32) | (uint64(b[5]) << 40) | (uint64(b[6]) << 48) | (uint64(b[7]) << 56)
+}
+
+func bytesToU32(b []byte) uint32 {
+	if len(b) < 4 {
+		return 0
+	}
+	return uint32(b[0]) | (uint32(b[1]) << 8) | (uint32(b[2]) << 16) | (uint32(b[3]) << 24)
+}
+
+func bytesToI32(b []byte) int32 {
+	return int32(bytesToU32(b))
+}
+
+func cString(b []byte) string {
+	for i, v := range b {
+		if v == 0 {
+			return string(b[:i])
+		}
+	}
+	return string(b)
+}
+
