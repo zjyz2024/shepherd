@@ -915,62 +915,19 @@ struct {
 } mem_oom_events SEC(".maps");
 
 // oom_kill_process kprobe 版本（兼容所有内核）
-// 签名：void oom_kill_process(struct oom_control *oc, const char *message)
-// 在 5.10+ 后简化为 void oom_kill_process(struct oom_control *oc)
-// 但参数布局基本一致，关键是读取 oc->chosen（选中的受害者任务）
+// 简化方案：只记录 OOM 事件触发，不尝试读取复杂的 struct oom_control
+// 被杀进程信息通过 Go 侧监听内核日志或系统其他机制获知
+//
+// 此 kprobe 的作用是：标记 OOM 事件发生的时刻，供诊断观测
 SEC("kprobe/oom_kill_process")
 int oom_kill_process_kprobe(struct pt_regs *ctx)
 {
-    // ctx->di 指向 struct oom_control *oc
-    // 从 oc 中读取 victim task
-    struct oom_control {
-        void *memcg;
-        void *nodemask;
-        void *gfp_mask;
-        int order;
-        void *chosen;           // struct task_struct *
-        void *chosen_memcg;
-        unsigned long totalpages;
-        struct task_struct *task;  // 触发 OOM 的任务
-        void *oc_lock;
-        enum oom_constraint constraint;
-    };
+	struct mem_oom_event_t ev = {};
+	ev.ts = bpf_ktime_get_ns();
+	// 其他字段留 0，Go 侧通过 dmesg / /proc 补充
 
-    struct oom_control *oc = (struct oom_control *)PT_REGS_PARM1(ctx);
-    if (!oc)
-        return 0;
-
-    struct task_struct *chosen = (struct task_struct *)BPF_CORE_READ(oc, chosen);
-    struct task_struct *trigger_task = (struct task_struct *)BPF_CORE_READ(oc, task);
-
-    if (!chosen)
-        return 0;
-
-    struct mem_oom_event_t ev = {};
-    ev.ts = bpf_ktime_get_ns();
-    ev.victim_pid = BPF_CORE_READ(chosen, tgid);  // tgid 是 PID
-    ev.victim_tgid = BPF_CORE_READ(chosen, tgid);
-    // RSS 需要从 task 的 mm_struct 读取；但 BPF 中读取比较复杂，用 0 标记
-    // 实际值会由 Go 侧从 /proc/[pid]/status 补充
-    ev.victim_rss_bytes = 0;
-
-    if (trigger_task) {
-        ev.trigger_pid = BPF_CORE_READ(trigger_task, tgid);
-        ev.trigger_tgid = BPF_CORE_READ(trigger_task, tgid);
-        bpf_probe_read_kernel_str(&ev.trigger_comm, sizeof(ev.trigger_comm),
-                                  (void *)BPF_CORE_READ(trigger_task, comm));
-    }
-
-    bpf_probe_read_kernel_str(&ev.victim_comm, sizeof(ev.victim_comm),
-                              (void *)BPF_CORE_READ(chosen, comm));
-
-    // 尝试读取 oom_score_adj（在 task_struct 中，但偏移量可变）
-    // 为简化，设为 0；Go 侧可从 /proc/[pid]/oom_score_adj 补充
-    ev.oom_score = 0;
-    ev.is_cgroup = 0;
-
-    bpf_perf_event_output(ctx, &mem_oom_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
-    return 0;
+	bpf_perf_event_output(ctx, &mem_oom_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+	return 0;
 }
 
 char __license[] SEC("license") = "Dual BSD/GPL";
