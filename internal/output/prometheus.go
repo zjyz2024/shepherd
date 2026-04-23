@@ -141,11 +141,18 @@ type MemMetrics struct {
 	ReclaimLRUActive     *prometheus.GaugeVec // lru_shrink_active 次数
 	ReclaimPagesTotal    *prometheus.GaugeVec // 累积回收页数
 
+	// Phase M3: Page Fault
+	MajorFaultCount *prometheus.GaugeVec // major fault 次数
+	MinorFaultCount *prometheus.GaugeVec // minor fault 次数
+	MaxMajorFaultNs *prometheus.GaugeVec // 单次 major fault 最大耗时
+	AvgMajorFaultNs *prometheus.GaugeVec // 平均 major fault 耗时
+
 	// Phase M5: OOM Killer
 	OOMEventCount *prometheus.CounterVec // OOM 事件计数（Counter，单调递增）
 
 	MemAllocMap   *sync.Map
 	MemReclaimMap *sync.Map
+	MemFaultMap   *sync.Map
 }
 
 func NewMemMetrics(memAllocMap, memReclaimMap *sync.Map) *MemMetrics {
@@ -164,6 +171,11 @@ func NewMemMetrics(memAllocMap, memReclaimMap *sync.Map) *MemMetrics {
 		ReclaimLRUActive:     createGaugeVec("mem_reclaim_lru_active_count", "mm_vmscan_lru_shrink_active event count per task", []string{"pid", "comm"}),
 		ReclaimPagesTotal:    createGaugeVec("mem_reclaim_pages_total", "total pages reclaimed per task", []string{"pid", "comm"}),
 
+		MajorFaultCount: createGaugeVec("mem_major_fault_count", "major page fault count per task", []string{"pid", "comm"}),
+		MinorFaultCount: createGaugeVec("mem_minor_fault_count", "minor page fault count per task", []string{"pid", "comm"}),
+		MaxMajorFaultNs: createGaugeVec("mem_max_major_fault_duration_ns", "max major fault duration (ns) per task", []string{"pid", "comm"}),
+		AvgMajorFaultNs: createGaugeVec("mem_avg_major_fault_duration_ns", "average major fault duration (ns) per task", []string{"pid", "comm"}),
+
 		OOMEventCount: promauto.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "mem_oom_kill_events_total",
@@ -174,6 +186,7 @@ func NewMemMetrics(memAllocMap, memReclaimMap *sync.Map) *MemMetrics {
 
 		MemAllocMap:   memAllocMap,
 		MemReclaimMap: memReclaimMap,
+		MemFaultMap:   cache.MemFaultMap,
 	}
 }
 
@@ -216,6 +229,24 @@ func (m *MemMetrics) UpdateMemMetricsFromCache(nodeName string) {
 			}
 			if rm.NrReclaimedTotal > 0 {
 				m.ReclaimPagesTotal.WithLabelValues(pidStr, rm.Comm).Set(float64(rm.NrReclaimedTotal))
+			}
+			return true
+		})
+	}
+
+	// Phase M3: 统计 Page Fault 指标
+	if m.MemFaultMap != nil {
+		m.MemFaultMap.Range(func(key, value interface{}) bool {
+			fm := value.(metadata.MemFaultMetrics)
+			pidStr := fmt.Sprintf("%d", fm.Pid)
+			if fm.MajorFaultCount > 0 {
+				m.MajorFaultCount.WithLabelValues(pidStr, fm.Comm).Set(float64(fm.MajorFaultCount))
+				m.MaxMajorFaultNs.WithLabelValues(pidStr, fm.Comm).Set(float64(fm.MaxMajorFaultNs))
+				avgNs := fm.TotalMajorFaultNs / fm.MajorFaultCount
+				m.AvgMajorFaultNs.WithLabelValues(pidStr, fm.Comm).Set(float64(avgNs))
+			}
+			if fm.MinorFaultCount > 0 {
+				m.MinorFaultCount.WithLabelValues(pidStr, fm.Comm).Set(float64(fm.MinorFaultCount))
 			}
 			return true
 		})

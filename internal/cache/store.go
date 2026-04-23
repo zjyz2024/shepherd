@@ -25,6 +25,11 @@ var MemAllocSlowPath *RingBuffer
 // value: metadata.MemReclaimMetrics
 var MemReclaimMap *sync.Map
 
+// MemFaultMap 按 PID 聚合的缺页异常统计（Phase M3）
+// key: pid (uint32, tgid)
+// value: metadata.MemFaultMetrics
+var MemFaultMap *sync.Map
+
 // OOMEventRing 最近 N 条 OOM 事件的环形缓冲（用于 CLI 显示告警）
 // value: metadata.OOMEvent
 var OOMEventRing *RingBuffer
@@ -35,6 +40,7 @@ func init() {
 	MemAllocMap = new(sync.Map)
 	MemAllocSlowPath = NewRingBuffer(64)
 	MemReclaimMap = new(sync.Map)
+	MemFaultMap = new(sync.Map)
 	OOMEventRing = NewRingBuffer(32)
 }
 

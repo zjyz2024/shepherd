@@ -31,10 +31,12 @@ func renderMemCLI() {
 		renderMemAllocTable()
 	case ColSetMemReclaim:
 		renderMemReclaimTable()
+	case ColSetMemFault:
+		renderMemFaultTable()
 	case ColSetMemOOM:
 		renderMemOOMTable()
 	default:
-		// M3-M4 未实现时占位
+		// M4 未实现时占位
 		fmt.Printf("\r\n  [ColumnSet %s] 尚未实现（后续 Phase 补齐）\r\n", colSetName)
 	}
 
@@ -96,6 +98,76 @@ func renderMemAllocRow(m *metadata.MemAllocMetrics, columns []Column) {
 		default:
 			cell = "-"
 		}
+		if col.alignLeft {
+			fmt.Printf("%-*s ", col.width, truncate(cell, col.width))
+		} else {
+			fmt.Printf("%*s ", col.width, truncate(cell, col.width))
+		}
+	}
+	fmt.Print("\r\n")
+}
+
+// renderMemFaultTable 渲染缺页异常表
+func renderMemFaultTable() {
+	var metrics []metadata.MemFaultMetrics
+	cache.MemFaultMap.Range(func(key, value interface{}) bool {
+		m := value.(metadata.MemFaultMetrics)
+		metrics = append(metrics, m)
+		return true
+	})
+
+	if len(metrics) == 0 {
+		fmt.Printf("  (无缺页异常信息)\r\n")
+		return
+	}
+
+	// 按 major fault 数量降序排列
+	sort.Slice(metrics, func(i, j int) bool {
+		return metrics[i].MajorFaultCount > metrics[j].MajorFaultCount
+	})
+
+	columns := columnDefinitions[ColSetMemFault]
+	renderTableHeader(columns)
+
+	displayCount := 20
+	if len(metrics) < displayCount {
+		displayCount = len(metrics)
+	}
+
+	for i := 0; i < displayCount; i++ {
+		renderMemFaultRow(&metrics[i], columns)
+	}
+}
+
+// renderMemFaultRow 渲染一行缺页异常指标
+func renderMemFaultRow(m *metadata.MemFaultMetrics, columns []Column) {
+	for _, col := range columns {
+		var cell string
+		switch col.name {
+		case "pid":
+			cell = fmt.Sprintf("%d", m.Pid)
+		case "comm":
+			cell = m.Comm
+		case "major":
+			cell = fmt.Sprintf("%d", m.MajorFaultCount)
+		case "minor":
+			cell = fmt.Sprintf("%d", m.MinorFaultCount)
+		case "max_major_ms":
+			cell = fmt.Sprintf("%.3f", float64(m.MaxMajorFaultNs)/1e6)
+		case "avg_major_ms":
+			if m.MajorFaultCount > 0 {
+				avg := m.TotalMajorFaultNs / m.MajorFaultCount
+				cell = fmt.Sprintf("%.3f", float64(avg)/1e6)
+			} else {
+				cell = "0"
+			}
+		case "total_ms":
+			total := (m.TotalMajorFaultNs + m.TotalMinorFaultNs) / 1e6
+			cell = fmt.Sprintf("%.1f", float64(total))
+		default:
+			cell = "-"
+		}
+
 		if col.alignLeft {
 			fmt.Printf("%-*s ", col.width, truncate(cell, col.width))
 		} else {
@@ -246,6 +318,76 @@ func renderMemReclaimRow(m *metadata.MemReclaimMetrics, columns []Column) {
 	fmt.Print("\r\n")
 }
 
+// renderMemFaultTable 渲染缺页异常表
+func renderMemFaultTable() {
+	var metrics []metadata.MemFaultMetrics
+	cache.MemFaultMap.Range(func(key, value interface{}) bool {
+		m := value.(metadata.MemFaultMetrics)
+		metrics = append(metrics, m)
+		return true
+	})
+
+	if len(metrics) == 0 {
+		fmt.Printf("  (无缺页异常信息)\r\n")
+		return
+	}
+
+	// 按 major fault 数量降序排列
+	sort.Slice(metrics, func(i, j int) bool {
+		return metrics[i].MajorFaultCount > metrics[j].MajorFaultCount
+	})
+
+	columns := columnDefinitions[ColSetMemFault]
+	renderTableHeader(columns)
+
+	displayCount := 20
+	if len(metrics) < displayCount {
+		displayCount = len(metrics)
+	}
+
+	for i := 0; i < displayCount; i++ {
+		renderMemFaultRow(&metrics[i], columns)
+	}
+}
+
+// renderMemFaultRow 渲染一行缺页异常指标
+func renderMemFaultRow(m *metadata.MemFaultMetrics, columns []Column) {
+	for _, col := range columns {
+		var cell string
+		switch col.name {
+		case "pid":
+			cell = fmt.Sprintf("%d", m.Pid)
+		case "comm":
+			cell = m.Comm
+		case "major":
+			cell = fmt.Sprintf("%d", m.MajorFaultCount)
+		case "minor":
+			cell = fmt.Sprintf("%d", m.MinorFaultCount)
+		case "max_major_ms":
+			cell = fmt.Sprintf("%.3f", float64(m.MaxMajorFaultNs)/1e6)
+		case "avg_major_ms":
+			if m.MajorFaultCount > 0 {
+				avg := m.TotalMajorFaultNs / m.MajorFaultCount
+				cell = fmt.Sprintf("%.3f", float64(avg)/1e6)
+			} else {
+				cell = "0"
+			}
+		case "total_ms":
+			total := (m.TotalMajorFaultNs + m.TotalMinorFaultNs) / 1e6
+			cell = fmt.Sprintf("%.1f", float64(total))
+		default:
+			cell = "-"
+		}
+
+		if col.alignLeft {
+			fmt.Printf("%-*s ", col.width, truncate(cell, col.width))
+		} else {
+			fmt.Printf("%*s ", col.width, truncate(cell, col.width))
+		}
+	}
+	fmt.Print("\r\n")
+}
+
 func sortMemReclaimMetrics(metrics []metadata.MemReclaimMetrics, field string, descending bool) {
 	sort.Slice(metrics, func(i, j int) bool {
 		var a, b uint64
@@ -369,6 +511,76 @@ func renderMemOOMRow(ev *metadata.OOMEvent, columns []Column) {
 			cell = ev.TriggerComm
 		case "oom_score":
 			cell = fmt.Sprintf("%d", ev.OomScore)
+		default:
+			cell = "-"
+		}
+
+		if col.alignLeft {
+			fmt.Printf("%-*s ", col.width, truncate(cell, col.width))
+		} else {
+			fmt.Printf("%*s ", col.width, truncate(cell, col.width))
+		}
+	}
+	fmt.Print("\r\n")
+}
+
+// renderMemFaultTable 渲染缺页异常表
+func renderMemFaultTable() {
+	var metrics []metadata.MemFaultMetrics
+	cache.MemFaultMap.Range(func(key, value interface{}) bool {
+		m := value.(metadata.MemFaultMetrics)
+		metrics = append(metrics, m)
+		return true
+	})
+
+	if len(metrics) == 0 {
+		fmt.Printf("  (无缺页异常信息)\r\n")
+		return
+	}
+
+	// 按 major fault 数量降序排列
+	sort.Slice(metrics, func(i, j int) bool {
+		return metrics[i].MajorFaultCount > metrics[j].MajorFaultCount
+	})
+
+	columns := columnDefinitions[ColSetMemFault]
+	renderTableHeader(columns)
+
+	displayCount := 20
+	if len(metrics) < displayCount {
+		displayCount = len(metrics)
+	}
+
+	for i := 0; i < displayCount; i++ {
+		renderMemFaultRow(&metrics[i], columns)
+	}
+}
+
+// renderMemFaultRow 渲染一行缺页异常指标
+func renderMemFaultRow(m *metadata.MemFaultMetrics, columns []Column) {
+	for _, col := range columns {
+		var cell string
+		switch col.name {
+		case "pid":
+			cell = fmt.Sprintf("%d", m.Pid)
+		case "comm":
+			cell = m.Comm
+		case "major":
+			cell = fmt.Sprintf("%d", m.MajorFaultCount)
+		case "minor":
+			cell = fmt.Sprintf("%d", m.MinorFaultCount)
+		case "max_major_ms":
+			cell = fmt.Sprintf("%.3f", float64(m.MaxMajorFaultNs)/1e6)
+		case "avg_major_ms":
+			if m.MajorFaultCount > 0 {
+				avg := m.TotalMajorFaultNs / m.MajorFaultCount
+				cell = fmt.Sprintf("%.3f", float64(avg)/1e6)
+			} else {
+				cell = "0"
+			}
+		case "total_ms":
+			total := (m.TotalMajorFaultNs + m.TotalMinorFaultNs) / 1e6
+			cell = fmt.Sprintf("%.1f", float64(total))
 		default:
 			cell = "-"
 		}

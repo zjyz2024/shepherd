@@ -885,6 +885,111 @@ int lru_shrink_active(u64 *ctx)
 }
 
 // =========================================================================
+// Memory Dimension - Phase M3: Page Fault
+// =========================================================================
+// 挂载点：
+//   kprobe/handle_mm_fault（5.0+，稳定）
+//   tp_btf/exceptions/page_fault_user（5.10+，用户态缺页）
+//   tp_btf/exceptions/page_fault_kernel（5.10+，内核态缺页）
+
+struct mem_fault_event_t {
+    __u64 ts;
+    __u64 duration_ns;      // fault 处理耗时
+    __u32 pid;              // 进程 ID (tid)
+    __u32 tgid;             // 进程组 ID
+    __u64 fault_addr;       // 触发缺页的虚拟地址
+    __u32 is_major;         // 1: major fault, 0: minor fault
+    __u32 is_user;          // 1: user page fault, 0: kernel
+    __u8  is_write;         // 1: write fault, 0: read
+    __u8  pad0[3];
+    char  comm[16];
+    __u32 stack_id;
+    __u32 pad1;
+} __attribute__((packed));
+
+struct mem_fault_event_t *unused_mem_fault_event_t __attribute__((unused));
+
+// 记录每个 tid 的 fault 开始时间（handle_mm_fault enter → exit 之间）
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 10240);
+    __type(key, __u32);
+    __type(value, __u64);
+} fault_start_by_pid SEC(".maps");
+
+// 输出事件
+struct {
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(max_entries, 256 * 1024);
+} mem_fault_events SEC(".maps");
+
+// handle_mm_fault kprobe enter
+// 签名：vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
+//                                   unsigned int flags)
+// 返回值的 VM_FAULT_MAJOR = 0x4
+SEC("kprobe/handle_mm_fault")
+int handle_mm_fault_enter(struct pt_regs *ctx)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 tid = (__u32)pid_tgid;
+    __u64 ts = bpf_ktime_get_ns();
+    bpf_map_update_elem(&fault_start_by_pid, &tid, &ts, BPF_ANY);
+    return 0;
+}
+
+// handle_mm_fault kretprobe
+// 在返回时判断是否为 major fault（retval & VM_FAULT_MAJOR != 0）
+SEC("kretprobe/handle_mm_fault")
+int handle_mm_fault_exit(struct pt_regs *ctx)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 tid = (__u32)pid_tgid;
+    __u32 tgid = pid_tgid >> 32;
+    __u64 now = bpf_ktime_get_ns();
+
+    __u64 *start_ts = bpf_map_lookup_elem(&fault_start_by_pid, &tid);
+    if (!start_ts)
+        return 0;
+
+    __u64 duration = now - *start_ts;
+
+    // 从返回值判断是否 major fault
+    // 返回值在 PT_REGS_RC 中（x86 的 rax，arm64 的 x0）
+    __u64 retval = PT_REGS_RC(ctx);
+    __u32 is_major = (retval & 0x4) ? 1 : 0;  // VM_FAULT_MAJOR = 0x4
+
+    // 仅在 major fault 或持续时间较长时采集事件
+    #define MAJOR_FAULT_THRESHOLD_NS 100000  // 100µs
+    if (is_major == 0 && duration < MAJOR_FAULT_THRESHOLD_NS) {
+        bpf_map_delete_elem(&fault_start_by_pid, &tid);
+        return 0;
+    }
+
+    struct mem_fault_event_t ev = {};
+    ev.ts = now;
+    ev.duration_ns = duration;
+    ev.pid = tid;
+    ev.tgid = tgid ? tgid : tid;
+    ev.is_major = is_major;
+    ev.is_user = 1;  // handle_mm_fault 既处理用户态也处理内核态，简化为 1
+    ev.is_write = 0;  // 无法从 retval 直接判断，由 Go 侧补充
+    ev.fault_addr = 0;  // 无法获取，由 Go 侧补充
+
+    // major fault 时采集栈
+    if (is_major) {
+        ev.stack_id = bpf_get_stackid(ctx, &stack_traces, BPF_F_FAST_STACK_CMP);
+    } else {
+        ev.stack_id = -1;
+    }
+
+    bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
+    bpf_perf_event_output(ctx, &mem_fault_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+
+    bpf_map_delete_elem(&fault_start_by_pid, &tid);
+    return 0;
+}
+
+// =========================================================================
 // Memory Dimension - Phase M5: OOM Killer
 // =========================================================================
 // 挂载点：

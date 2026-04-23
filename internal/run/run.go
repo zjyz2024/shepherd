@@ -198,6 +198,25 @@ func Run(cfg config.Configuration) {
 		}
 	}
 
+	// Phase M3: 挂载 handle_mm_fault kprobe/kretprobe
+	faultEnterProg := coll.Programs["handle_mm_fault_enter"]
+	faultExitProg := coll.Programs["handle_mm_fault_exit"]
+	if faultEnterProg != nil && faultExitProg != nil {
+		faultEnterLink, kerr := link.Kprobe("handle_mm_fault", faultEnterProg, nil)
+		if kerr != nil {
+			log.Warningf("attach handle_mm_fault kprobe failed (page fault monitoring disabled): %v", kerr)
+		} else {
+			defer faultEnterLink.Close()
+
+			faultExitLink, kerr := link.Kretprobe("handle_mm_fault", faultExitProg, nil)
+			if kerr != nil {
+				log.Warningf("attach handle_mm_fault kretprobe failed: %v", kerr)
+			} else {
+				defer faultExitLink.Close()
+			}
+		}
+	}
+
 	// 启动任务管理器，从 ebpf map 中获取数据并进行处理
 	tm := NewTaskManager()
 	cliCtx, cliCancel := context.WithCancel(ctx)
@@ -206,6 +225,7 @@ func Run(cfg config.Configuration) {
 	tm.Add("处理调度延迟", func() error { output.ProcessSchedDelay(coll, cliCtx, cfg); return nil })
 	tm.Add("处理内存分配", func() error { output.ProcessMemAlloc(coll, cliCtx); return nil })
 	tm.Add("处理内存回收", func() error { output.ProcessMemReclaim(coll, cliCtx); return nil })
+	tm.Add("处理缺页异常", func() error { output.ProcessMemFault(coll, cliCtx); return nil })
 	tm.Add("处理OOM事件", func() error { output.ProcessOOM(coll, cliCtx); return nil })
 	tm.Add("诊断命令行", func() error { output.StartDiagnosticCLI(cliCtx, cliCancel, coll); return nil })
 	// 运行所有任务

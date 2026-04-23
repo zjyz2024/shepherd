@@ -74,3 +74,20 @@ type ProcessSnapshot struct {
 	State    string // R/S/D/Z/T
 }
 
+// =========================================================================
+// Phase M3: Page Fault
+// =========================================================================
+
+// MemFaultMetrics 按 PID 聚合的缺页异常统计
+type MemFaultMetrics struct {
+	Pid              uint32 // 进程 ID (tgid)
+	Comm             string
+	MajorFaultCount  uint64 // major page fault 次数
+	MinorFaultCount  uint64 // minor page fault 次数
+	MaxMajorFaultNs  uint64 // 单次 major fault 最大耗时
+	TotalMajorFaultNs uint64 // 累积 major fault 耗时
+	TotalMinorFaultNs uint64 // 累积 minor fault 耗时
+	LastStackId      int32  // 最近一次 major fault 的栈 ID
+	LastTs           uint64 // 最近一次事件时间戳
+}
+

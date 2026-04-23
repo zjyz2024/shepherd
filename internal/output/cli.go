@@ -48,7 +48,7 @@ const (
 	schedColSetBegin = ColSetBasic
 	schedColSetEnd   = ColSetFull
 	memColSetBegin   = ColSetMemAlloc
-	memColSetEnd     = ColSetMemOOM
+	memColSetEnd     = ColSetMemFault
 )
 
 type Column struct {
@@ -138,6 +138,16 @@ var columnDefinitions = map[ColumnSet][]Column{
 		{name: "max_us", label: "MAX(us)", width: 12, alignLeft: false},
 		{name: "order_hist", label: "ORDER_HIST", width: 13, alignLeft: true},
 		{name: "stack", label: "SLOW_STACK", width: 30, alignLeft: true},
+	},
+	// === Phase M3: Page Fault ===
+	ColSetMemFault: {
+		{name: "pid", label: "PID", width: 8, alignLeft: false},
+		{name: "comm", label: "COMM", width: 20, alignLeft: true},
+		{name: "major", label: "MAJOR", width: 10, alignLeft: false},
+		{name: "minor", label: "MINOR", width: 10, alignLeft: false},
+		{name: "max_major_ms", label: "MAX_MAJ(ms)", width: 12, alignLeft: false},
+		{name: "avg_major_ms", label: "AVG_MAJ(ms)", width: 12, alignLeft: false},
+		{name: "total_ms", label: "TOTAL(ms)", width: 12, alignLeft: false},
 	},
 	// === Phase M5: OOM Killer ===
 	ColSetMemOOM: {
